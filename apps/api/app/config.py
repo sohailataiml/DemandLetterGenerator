@@ -1,0 +1,96 @@
+"""Runtime configuration.
+
+Deliberately dependency-free (no pydantic-settings) so the service boots from a
+bare environment. Every value has a development default; anything that would be
+unsafe in production (auth mode, storage root) is called out in the README.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _env(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    return int(raw)
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return list(default)
+    return [part.strip() for part in raw.split("|") if part.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    database_url: str
+    storage_root: Path
+    max_upload_bytes: int
+    allowed_upload_mime: frozenset[str]
+
+    # AI layer
+    llm_provider: str
+    anthropic_model: str
+    anthropic_api_key: str | None
+    anthropic_effort: str
+
+    # Letterhead / firm identity used by the deterministic template blocks.
+    firm_name: str
+    firm_address_lines: list[str] = field(default_factory=list)
+    firm_phone: str = ""
+    firm_email: str = ""
+
+    # Browser origins allowed to call the API. Explicit list, never a wildcard.
+    cors_origins: list[str] = field(default_factory=list)
+
+    @property
+    def is_anthropic_enabled(self) -> bool:
+        return self.llm_provider == "anthropic" and bool(self.anthropic_api_key)
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    storage_root = Path(_env("DLG_STORAGE_ROOT", str(REPO_ROOT / "var" / "storage")))
+    return Settings(
+        database_url=_env("DLG_DATABASE_URL", f"sqlite:///{REPO_ROOT / 'var' / 'demand.db'}"),
+        storage_root=storage_root,
+        max_upload_bytes=_env_int("DLG_MAX_UPLOAD_BYTES", 50 * 1024 * 1024),
+        allowed_upload_mime=frozenset(
+            {
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/msword",
+                "image/jpeg",
+                "image/png",
+                "text/plain",
+                "text/markdown",
+            }
+        ),
+        llm_provider=_env("DLG_LLM_PROVIDER", "stub"),
+        anthropic_model=_env("DLG_ANTHROPIC_MODEL", "claude-opus-5"),
+        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
+        anthropic_effort=_env("DLG_ANTHROPIC_EFFORT", "high"),
+        firm_name=_env("DLG_FIRM_NAME", "Stalwart Law Group"),
+        firm_address_lines=_env_list(
+            "DLG_FIRM_ADDRESS",
+            ["1055 W 7th St, Suite 2800", "Los Angeles, CA 90017"],
+        ),
+        firm_phone=_env("DLG_FIRM_PHONE", "(213) 000-0000"),
+        firm_email=_env("DLG_FIRM_EMAIL", "claims@example-firm.test"),
+        cors_origins=_env_list(
+            "DLG_CORS_ORIGINS", ["http://localhost:3000", "http://127.0.0.1:3000"]
+        ),
+    )

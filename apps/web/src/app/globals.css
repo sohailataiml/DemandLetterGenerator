@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-surface-muted text-body text-ink-body antialiased;
+  }
+
+  /* Figures line up column to column in every financial view. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent-600;
+  }
+
+  ::selection {
+    @apply bg-accent-100 text-accent-900;
+  }
+}
+
+@layer components {
+  /* ---------------------------------------------------------------- surfaces */
+
+  .card {
+    @apply rounded-md border border-line bg-white shadow-panel;
+  }
+
+  .card-title {
+    @apply text-card-title font-semibold text-ink;
+  }
+
+  /* --------------------------------------------------------------- typography */
+
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.09em] text-ink-faint;
+  }
+
+  .metric-label {
+    @apply text-2xs font-medium uppercase tracking-[0.07em] text-ink-faint;
+  }
+
+  .metric-value {
+    @apply tabular text-metric font-semibold tracking-tight text-ink;
+  }
+
+  .metric-value-sm {
+    @apply tabular text-[1.0625rem] font-semibold tracking-tight text-ink;
+  }
+
+  /* ------------------------------------------------------------- the document */
+
+  /* The demand letter should read as a document, not as app chrome. */
+  .letter-body {
+    @apply whitespace-pre-wrap font-serif text-prose leading-[1.85] text-ink-body;
+  }
+
+  .letter-block {
+    @apply whitespace-pre-wrap font-mono text-[0.8125rem] leading-[1.7] text-ink-muted;
+  }
+
+  .letter-heading {
+    @apply text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint;
+  }
+
+  /* ------------------------------------------------------------- interactions */
+
+  .nav-item {
+    @apply relative flex w-full items-center rounded px-2.5 py-[0.4375rem] text-left text-meta transition-colors duration-150;
+  }
+
+  .nav-item-idle {
+    @apply text-ink-muted hover:bg-surface-sunken hover:text-ink;
+  }
+
+  .nav-item-active {
+    @apply bg-accent-50 font-semibold text-accent-800;
+  }
+
+  /* Small accent indicator on the selected navigation item. */
+  .nav-item-active::before {
+    content: "";
+    @apply absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-sm bg-accent-600;
+  }
+}
