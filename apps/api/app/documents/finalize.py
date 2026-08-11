@@ -80,14 +80,21 @@ def build_pdf(
     actor: CurrentUser,
     store: ObjectStore | None = None,
     final: bool = False,
+    docx_data: bytes | None = None,
 ) -> tuple[bytes, str, str]:
     """Convert the DOCX to PDF via LibreOffice.
 
     There is no pure-Python fallback that preserves the letterhead faithfully, so
     if no converter is installed this raises rather than shipping a lookalike.
+
+    ``docx_data`` lets a caller that already rendered the document hand those
+    exact bytes over. Re-rendering would produce a different file — python-docx
+    stamps each render with the current time — which for a final artifact means
+    a PDF that does not correspond to the approved DOCX.
     """
     store = store or get_object_store()
-    docx_data, _, _ = build_docx(session, demand, actor=actor, store=store, final=final)
+    if docx_data is None:
+        docx_data, _, _ = build_docx(session, demand, actor=actor, store=store, final=final)
 
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if soffice is None:
@@ -131,6 +138,58 @@ def build_pdf(
     return pdf_data, key, digest
 
 
+def load_or_build_docx(
+    session: Session,
+    demand: Demand,
+    *,
+    actor: CurrentUser,
+    store: ObjectStore | None = None,
+) -> tuple[bytes, str | None]:
+    """Bytes for download.
+
+    An approved demand serves the artifact that was approved and hashed — the
+    stored object, byte for byte. Only a draft is rendered on demand.
+    """
+    store = store or get_object_store()
+    if demand.locked and demand.docx_key and store.exists(demand.docx_key):
+        return store.get(demand.docx_key), demand.docx_sha256
+    data, _, digest = build_docx(session, demand, actor=actor, store=store, final=demand.locked)
+    return data, digest
+
+
+def load_or_build_pdf(
+    session: Session,
+    demand: Demand,
+    *,
+    actor: CurrentUser,
+    store: ObjectStore | None = None,
+) -> tuple[bytes, str | None]:
+    """As above for PDF.
+
+    If a demand was approved without a converter available, the PDF is generated
+    from the *stored* DOCX rather than from a new render, so it still matches the
+    approved document.
+    """
+    store = store or get_object_store()
+    if demand.locked and demand.pdf_key and store.exists(demand.pdf_key):
+        return store.get(demand.pdf_key), demand.pdf_sha256
+
+    approved_docx = (
+        store.get(demand.docx_key)
+        if demand.locked and demand.docx_key and store.exists(demand.docx_key)
+        else None
+    )
+    data, _, digest = build_pdf(
+        session,
+        demand,
+        actor=actor,
+        store=store,
+        final=demand.locked,
+        docx_data=approved_docx,
+    )
+    return data, digest
+
+
 def approve_demand(
     session: Session,
     demand: Demand,
@@ -168,12 +227,17 @@ def approve_demand(
     demand.locked = True
     session.flush()
 
-    _, docx_key, docx_sha = build_docx(session, demand, actor=actor, store=store, final=True)
+    docx_data, docx_key, docx_sha = build_docx(
+        session, demand, actor=actor, store=store, final=True
+    )
 
     pdf_sha = None
     pdf_note = None
     try:
-        _, _, pdf_sha = build_pdf(session, demand, actor=actor, store=store, final=True)
+        # Convert the exact bytes just approved, never a fresh render of them.
+        _, _, pdf_sha = build_pdf(
+            session, demand, actor=actor, store=store, final=True, docx_data=docx_data
+        )
     except PdfUnavailableError as exc:
         if require_pdf:
             # Roll the approval back rather than record an approval we cannot fulfil.

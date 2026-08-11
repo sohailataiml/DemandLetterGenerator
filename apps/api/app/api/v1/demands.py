@@ -8,7 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...documents.finalize import ApprovalBlockedError, PdfUnavailableError, build_docx, build_pdf
+from ...documents.finalize import (
+    ApprovalBlockedError,
+    PdfUnavailableError,
+    load_or_build_docx,
+    load_or_build_pdf,
+)
 from ...documents.finalize import approve_demand as approve_demand_service
 from ...domain.models import Case, Demand
 from ...domain.schemas import (
@@ -156,7 +161,7 @@ def download_docx(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="demand has not been generated yet"
         )
-    data, _, digest = build_docx(db, demand, actor=user, final=demand.locked)
+    data, digest = load_or_build_docx(db, demand, actor=user)
     name = "final.docx" if demand.locked else f"draft-v{demand.version}.docx"
     return Response(
         content=data,
@@ -179,7 +184,7 @@ def download_pdf(
             status_code=status.HTTP_409_CONFLICT, detail="demand has not been generated yet"
         )
     try:
-        data, _, digest = build_pdf(db, demand, actor=user, final=demand.locked)
+        data, digest = load_or_build_pdf(db, demand, actor=user)
     except PdfUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
