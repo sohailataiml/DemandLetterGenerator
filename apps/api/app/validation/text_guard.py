@@ -153,6 +153,33 @@ def extract_dates(text: str) -> set[date]:
     return found
 
 
+def extract_impossible_dates(text: str) -> list[str]:
+    """Date-shaped text that is not a date — "February 29, 2019", "13/40/2024".
+
+    :func:`extract_dates` drops these, which is correct for "is this date
+    supported by the record", but it means a letter can state a day that never
+    existed and no check notices. They are reported separately so it does.
+    """
+    impossible: list[str] = []
+    for match in _LONG_DATE_RE.finditer(text):
+        month = _MONTHS[match.group(1).lower()]
+        try:
+            date(int(match.group(3)), month, int(match.group(2)))
+        except ValueError:
+            impossible.append(match.group(0))
+    for match in _SLASH_DATE_RE.finditer(text):
+        try:
+            date(int(match.group(3)), int(match.group(1)), int(match.group(2)))
+        except ValueError:
+            impossible.append(match.group(0))
+    for match in _ISO_DATE_RE.finditer(text):
+        try:
+            date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            impossible.append(match.group(0))
+    return impossible
+
+
 def extract_name_candidates(text: str) -> set[str]:
     candidates: set[str] = set()
     for match in _NAME_RE.finditer(text):

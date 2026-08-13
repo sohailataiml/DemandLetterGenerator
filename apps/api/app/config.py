@@ -34,15 +34,31 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [part.strip() for part in raw.split("|") if part.strip()]
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
     storage_root: Path
+    #: Create tables from the models at startup. Convenient for a first run;
+    #: turn it off in a deployment so a missing migration is visible.
+    auto_create_schema: bool
     max_upload_bytes: int
     allowed_upload_mime: frozenset[str]
 
+    # Background work. "thread" runs jobs on a worker thread of this process;
+    # "inline" runs them synchronously (tests). See app/jobs/runner.py for the
+    # limits of both and what a multi-process deployment needs instead.
+    job_runner: str
+
     # AI layer
     llm_provider: str
+    extraction_provider: str
     anthropic_model: str
     anthropic_api_key: str | None
     anthropic_effort: str
@@ -67,6 +83,7 @@ def get_settings() -> Settings:
     return Settings(
         database_url=_env("DLG_DATABASE_URL", f"sqlite:///{REPO_ROOT / 'var' / 'demand.db'}"),
         storage_root=storage_root,
+        auto_create_schema=_env_bool("DLG_AUTO_CREATE_SCHEMA", True),
         max_upload_bytes=_env_int("DLG_MAX_UPLOAD_BYTES", 50 * 1024 * 1024),
         allowed_upload_mime=frozenset(
             {
@@ -79,7 +96,9 @@ def get_settings() -> Settings:
                 "text/markdown",
             }
         ),
+        job_runner=_env("DLG_JOB_RUNNER", "thread"),
         llm_provider=_env("DLG_LLM_PROVIDER", "stub"),
+        extraction_provider=_env("DLG_EXTRACTION_PROVIDER", "pattern"),
         anthropic_model=_env("DLG_ANTHROPIC_MODEL", "claude-opus-5"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         anthropic_effort=_env("DLG_ANTHROPIC_EFFORT", "high"),

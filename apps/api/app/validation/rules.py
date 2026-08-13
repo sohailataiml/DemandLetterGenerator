@@ -510,6 +510,21 @@ class NarrativeStaysGrounded:
                     )
                 )
 
+            impossible = text_guard.extract_impossible_dates(body)
+            if impossible:
+                issues.append(
+                    Issue(
+                        code=self.code,
+                        severity=Severity.BLOCKING,
+                        message=(
+                            f"Section '{section.key}' states date(s) that do not exist: "
+                            f"{', '.join(impossible)}."
+                        ),
+                        section_key=section.key,
+                        details={"impossible_dates": impossible},
+                    )
+                )
+
             bad_names = text_guard.unsupported_names(body, allowed_names)
             if bad_names:
                 issues.append(

@@ -19,6 +19,7 @@ from ..audit import service as audit
 from ..domain.enums import FactStatus, FactType
 from ..domain.models import Fact, FactSource, SourceDocument
 from ..domain.schemas import FactSourceIn
+from ..provenance import citations
 from ..security.auth import CurrentUser
 
 
@@ -30,9 +31,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _page_text(document: SourceDocument, page_number: int | None) -> str:
+    if page_number is None:
+        return ""
+    page = next((p for p in document.pages if p.page_number == page_number), None)
+    return page.text if page else ""
+
+
 def _attach_sources(
     session: Session, fact: Fact, sources: list[FactSourceIn], case_id: str
 ) -> None:
+    """Attach citations, resolving each excerpt to a span where possible.
+
+    A hand-entered citation gets the same treatment as an extracted one: the
+    excerpt is looked up in the stored page text so the reviewer's highlight is
+    a real offset rather than a search the UI has to redo. An excerpt that
+    cannot be located is still stored — a paralegal paraphrasing a record is
+    legitimate — but it is recorded without offsets so the UI can say the
+    highlight is approximate instead of implying precision it does not have.
+    """
     for source in sources:
         document = session.get(SourceDocument, source.document_id)
         if document is None or document.case_id != case_id:
@@ -42,12 +59,21 @@ def _attach_sources(
                 f"page {source.page_number} is outside document {document.id} "
                 f"(1..{document.page_count})"
             )
+
+        resolved = None
+        if source.excerpt:
+            resolved = citations.resolve(_page_text(document, source.page_number), source.excerpt)
+
         session.add(
             FactSource(
                 fact_id=fact.id,
                 document_id=source.document_id,
                 page_number=source.page_number,
                 excerpt=source.excerpt,
+                start_offset=resolved.start_offset if resolved else None,
+                end_offset=resolved.end_offset if resolved else None,
+                quoted_text_sha256=resolved.quoted_text_sha256 if resolved else None,
+                match_kind=resolved.match_kind.value if resolved else None,
             )
         )
 

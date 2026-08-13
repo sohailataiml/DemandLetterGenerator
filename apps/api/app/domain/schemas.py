@@ -408,6 +408,35 @@ class FactCreate(BaseModel):
     confidence: float | None = None
 
 
+class FactOutWithMetadata(BaseModel):
+    """Extraction provenance, present only on machine-proposed facts."""
+
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    document_id: str | None = None
+    page_number: int | None = None
+    match_kind: str | None = None
+    low_confidence: bool = False
+
+
+class ExtractionRunIn(BaseModel):
+    document_ids: list[str] | None = None
+
+
+class ExtractionReportOut(BaseModel):
+    document_id: str
+    provider: str
+    model: str | None = None
+    prompt_version: str
+    chunks: int
+    candidates: int
+    proposed: int
+    proposed_fact_ids: list[str] = Field(default_factory=list)
+    rejected: list[dict[str, Any]] = Field(default_factory=list)
+    suspected_injection_chunks: list[int] = Field(default_factory=list)
+
+
 class FactSupersede(FactCreate):
     reason: str
 
@@ -421,6 +450,12 @@ class FactSourceOut(ApiModel):
     document_id: str
     page_number: int | None
     excerpt: str | None
+    start_offset: int | None = None
+    end_offset: int | None = None
+    quoted_text_sha256: str | None = None
+    #: "exact"/"normalized" mean the offsets are authoritative; "approximate"
+    #: means the UI must present the highlight as a best guess.
+    match_kind: str | None = None
 
 
 class FactOut(ApiModel):
@@ -439,6 +474,7 @@ class FactOut(ApiModel):
     reviewed_by: str | None
     reviewed_at: datetime | None
     rejection_reason: str | None
+    extraction_metadata: dict[str, Any] | None = None
     sources: list[FactSourceOut] = Field(default_factory=list)
 
 
@@ -526,8 +562,157 @@ class DemandOut(ApiModel):
     approved_at: datetime | None
     locked: bool
     created_by: str
+    template_id: str | None = None
+    template_sha256: str | None = None
+    fidelity_report: dict[str, Any] | None = None
+    claim_report: dict[str, Any] | None = None
     sections: list[DemandSectionOut] = Field(default_factory=list)
     issues: list[ValidationIssueOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- templates
+
+
+class TemplateSlotOut(BaseModel):
+    name: str
+    kind: str
+    block_index: int
+    section_key: str | None = None
+    fields: list[str] = Field(default_factory=list)
+    resolvable: bool = True
+
+
+class TemplateSectionOut(BaseModel):
+    key: str
+    title: str
+    start_index: int
+    end_index: int
+
+
+class TemplateOut(ApiModel):
+    id: str
+    case_id: str | None
+    name: str
+    original_filename: str
+    sha256: str
+    structure_sha256: str
+    size_bytes: int
+    block_count: int
+    slot_names: list[str]
+    uploaded_by: str
+    created_at: datetime
+
+
+class TemplateDetailOut(TemplateOut):
+    slots: list[TemplateSlotOut] = Field(default_factory=list)
+    sections: list[TemplateSectionOut] = Field(default_factory=list)
+    header_parts: list[str] = Field(default_factory=list)
+    footer_parts: list[str] = Field(default_factory=list)
+    page_setup: dict[str, Any] = Field(default_factory=dict)
+    unknown_slots: list[str] = Field(default_factory=list)
+
+
+class TemplateBindIn(BaseModel):
+    template_id: str
+
+
+class FidelityReportOut(BaseModel):
+    template_hash: str
+    required_blocks: dict[str, int]
+    styles_changed: int
+    headers_changed: int
+    footers_changed: int
+    numbering_changed: int
+    page_setup_changed: bool
+    blocking_issues: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- revisions
+
+
+class RevisionConstraintIn(BaseModel):
+    preserve_facts: bool = True
+    preserve_amounts: bool = True
+    preserve_dates: bool = True
+    allow_new_facts: bool = False
+    preserve_literals: list[str] = Field(default_factory=list)
+
+
+class RevisionRequestIn(BaseModel):
+    section_key: str
+    instruction: str = Field(min_length=3, max_length=2000)
+    constraints: RevisionConstraintIn = Field(default_factory=RevisionConstraintIn)
+
+
+class RevisionDecisionIn(BaseModel):
+    note: str | None = None
+
+
+class RevisionOperationOut(ApiModel):
+    op: str
+    paragraph_id: str
+    position: int
+    before_hash: str
+    after_text: str
+    fact_ids: list[str] = Field(default_factory=list)
+
+
+class RevisionProposalOut(ApiModel):
+    id: str
+    demand_id: str
+    section_key: str
+    instruction: str
+    constraints: dict[str, Any]
+    status: str
+    provider_name: str | None
+    model_name: str | None
+    prompt_version: str | None
+    validation: dict[str, Any]
+    requested_by: str
+    decided_by: str | None
+    decided_at: datetime | None
+    decision_note: str | None
+    created_at: datetime
+    operations: list[RevisionOperationOut] = Field(default_factory=list)
+
+
+class RevisionProposalDetailOut(BaseModel):
+    """The proposal plus everything a reviewer needs to decide on it."""
+
+    proposal: RevisionProposalOut
+    before: str
+    after: str
+    unified_diff: str
+    violations: list[dict[str, Any]] = Field(default_factory=list)
+    valid: bool
+
+
+# --------------------------------------------------------------------------- jobs
+
+
+class JobRequestIn(BaseModel):
+    demand_id: str | None = None
+    template_id: str | None = None
+    letter_date: date | None = None
+    extract: bool = False
+    document_ids: list[str] | None = None
+    regenerate_sections: list[str] | None = None
+
+
+class GenerationJobOut(ApiModel):
+    id: str
+    case_id: str
+    demand_id: str | None
+    kind: str
+    status: str
+    stages: list[dict[str, Any]] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    requested_by: str
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class ApprovalIn(BaseModel):

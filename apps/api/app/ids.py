@@ -33,6 +33,13 @@ SECTION = "sec"
 ISSUE = "vis"
 AUDIT = "aud"
 USER = "user"
+TEMPLATE = "tpl"
+CITATION = "cite"
+CLAIM_CHECK = "clmchk"
+REVISION = "rev"
+REVISION_OP = "revop"
+JOB = "job"
+EXTRACTION = "extr"
 
 
 def new_id(prefix: str) -> str:

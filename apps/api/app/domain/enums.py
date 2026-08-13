@@ -112,6 +112,32 @@ class SectionSource(StrEnum):
     HUMAN = "human"
 
 
+class ClaimStatus(StrEnum):
+    """How well one atomic factual claim is backed by the verified fact store."""
+
+    SUPPORTED = "SUPPORTED"
+    PARTIALLY_SUPPORTED = "PARTIALLY_SUPPORTED"
+    UNSUPPORTED = "UNSUPPORTED"
+
+
+class RevisionStatus(StrEnum):
+    """An AI revision proposal is a proposal until an attorney decides."""
+
+    PROPOSED = "PROPOSED"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    INVALID = "INVALID"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
 class Severity(StrEnum):
     INFO = "INFO"
     WARNING = "WARNING"

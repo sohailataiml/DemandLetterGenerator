@@ -33,6 +33,7 @@ from ...generation.composer import (
     validate_demand,
 )
 from ...security.auth import CurrentUser, can_approve, can_edit_case, can_read
+from ...templates.service import TemplateError
 from ..deps import get_case, get_demand
 
 router = APIRouter(tags=["demands"])
@@ -161,7 +162,15 @@ def download_docx(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="demand has not been generated yet"
         )
-    data, digest = load_or_build_docx(db, demand, actor=user)
+    try:
+        data, digest = load_or_build_docx(db, demand, actor=user)
+    except TemplateError as exc:
+        # The template cannot be bound. Serving a partially filled letter would
+        # be worse than serving none, so this is a conflict, not a fallback.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"the letter could not be bound into its template: {exc}",
+        ) from exc
     name = "final.docx" if demand.locked else f"draft-v{demand.version}.docx"
     return Response(
         content=data,

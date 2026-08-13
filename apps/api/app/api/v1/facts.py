@@ -8,7 +8,15 @@ from sqlalchemy.orm import Session
 from ...db import get_db
 from ...domain.enums import FactStatus
 from ...domain.models import Case, Fact
-from ...domain.schemas import FactCreate, FactOut, FactRejection, FactSupersede
+from ...domain.schemas import (
+    ExtractionReportOut,
+    ExtractionRunIn,
+    FactCreate,
+    FactOut,
+    FactRejection,
+    FactSupersede,
+)
+from ...extraction import service as extraction
 from ...facts import service as facts
 from ...security.auth import CurrentUser, can_edit_case, can_read, can_verify_facts
 from ..deps import get_case, get_fact
@@ -71,6 +79,37 @@ def reject_fact(
         return facts.reject_fact(db, fact, user, payload.reason)
     except facts.FactStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/cases/{case_id}/extract",
+    response_model=list[ExtractionReportOut],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def extract_facts(
+    payload: ExtractionRunIn,
+    case: Case = Depends(get_case),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(can_edit_case),
+) -> list[ExtractionReportOut]:
+    """Read the case materials and propose facts from them.
+
+    Every fact created here is ``PROPOSED``. Nothing this endpoint does can put
+    a fact into evidence — that still needs a human on ``/facts/{id}/verify``.
+
+    This is the synchronous path, kept for scripting and tests. The UI uses the
+    asynchronous job in ``/cases/{case_id}/jobs`` so a long extraction does not
+    hold a request open.
+    """
+    try:
+        reports = extraction.extract_case(
+            db, case.id, actor=user, document_ids=payload.document_ids
+        )
+    except extraction.ExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"extraction failed: {exc}"
+        ) from exc
+    return [ExtractionReportOut(**report.to_dict()) for report in reports]
 
 
 @router.post(

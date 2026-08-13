@@ -17,6 +17,10 @@ _TMP = Path(tempfile.mkdtemp(prefix="dlg-tests-"))
 os.environ["DLG_DATABASE_URL"] = f"sqlite:///{_TMP / 'test.db'}"
 os.environ["DLG_STORAGE_ROOT"] = str(_TMP / "storage")
 os.environ["DLG_LLM_PROVIDER"] = "stub"
+os.environ["DLG_EXTRACTION_PROVIDER"] = "pattern"
+# Jobs run synchronously in tests so their effects are observable without
+# sleeping on a thread. The pipeline itself is identical either way.
+os.environ["DLG_JOB_RUNNER"] = "inline"
 os.environ.pop("ANTHROPIC_API_KEY", None)
 
 from fastapi.testclient import TestClient  # noqa: E402

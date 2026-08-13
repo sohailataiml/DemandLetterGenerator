@@ -36,13 +36,16 @@ from ..db import Base
 from .enums import (
     BillStatus,
     CaseStatus,
+    ClaimStatus,
     DamageCategory,
     DemandStatus,
     DocumentStatus,
     DocumentType,
     FactStatus,
     FactType,
+    JobStatus,
     PartyRole,
+    RevisionStatus,
     SectionSource,
     Severity,
     TreatmentEventType,
@@ -102,6 +105,7 @@ class Case(Base, TimestampMixin):
         back_populates="case", uselist=False, cascade="all, delete-orphan"
     )
     documents: Mapped[list["SourceDocument"]] = relationship(cascade="all, delete-orphan")
+    templates: Mapped[list["LetterTemplate"]] = relationship(cascade="all, delete-orphan")
     facts: Mapped[list["Fact"]] = relationship(cascade="all, delete-orphan")
     demands: Mapped[list["Demand"]] = relationship(
         back_populates="case", cascade="all, delete-orphan"
@@ -405,6 +409,9 @@ class Fact(Base, TimestampMixin):
     reviewed_by: Mapped[str | None] = mapped_column(String(64))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rejection_reason: Mapped[str | None] = mapped_column(Text)
+    #: Who or what produced this fact: provider, model, prompt version, chunk.
+    #: Present on machine-extracted facts, NULL on hand-entered ones.
+    extraction_metadata: Mapped[dict | None] = mapped_column(JSON)
 
     sources: Mapped[list["FactSource"]] = relationship(
         back_populates="fact", cascade="all, delete-orphan", lazy="selectin"
@@ -412,6 +419,15 @@ class Fact(Base, TimestampMixin):
 
 
 class FactSource(Base, TimestampMixin):
+    """A citation: where in which document this fact came from.
+
+    ``start_offset``/``end_offset`` are character offsets into the text of the
+    cited page. When they are present the UI highlights the exact span; when
+    they are not it falls back to searching for the excerpt and says so. The
+    hash of the quoted text is what proves the offsets still point at the same
+    words they did when the fact was proposed.
+    """
+
     __tablename__ = "fact_sources"
 
     id: Mapped[str] = _pk(ids.FACT_SOURCE)
@@ -421,8 +437,44 @@ class FactSource(Base, TimestampMixin):
     )
     page_number: Mapped[int | None] = mapped_column(Integer)
     excerpt: Mapped[str | None] = mapped_column(Text)
+    start_offset: Mapped[int | None] = mapped_column(Integer)
+    end_offset: Mapped[int | None] = mapped_column(Integer)
+    quoted_text_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: "exact" when the offsets were verified against the stored page text,
+    #: "approximate" when only a fuzzy match was possible.
+    match_kind: Mapped[str | None] = mapped_column(String(16))
 
     fact: Mapped[Fact] = relationship(back_populates="sources")
+
+
+class LetterTemplate(Base, TimestampMixin):
+    """An attorney's own demand letter, uploaded to be matched exactly.
+
+    The bytes are stored immutably and content-addressed like any other source
+    document. ``manifest`` is the analyzer's description of the file: where the
+    blocks are, which regions are dynamic, and digests of every part that
+    carries formatting. Generation binds into a clone of ``storage_key``; it
+    never rebuilds a document from the manifest.
+    """
+
+    __tablename__ = "letter_templates"
+    __table_args__ = (UniqueConstraint("case_id", "sha256", name="uq_case_template_sha"),)
+
+    id: Mapped[str] = _pk(ids.TEMPLATE)
+    case_id: Mapped[str | None] = mapped_column(
+        ForeignKey("cases.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(400), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    structure_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False)
+    slot_names: Mapped[list[str]] = mapped_column(JSON, default=list)
+    block_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    uploaded_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class Demand(Base, TimestampMixin):
@@ -451,7 +503,18 @@ class Demand(Base, TimestampMixin):
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     damages_snapshot: Mapped[dict | None] = mapped_column(JSON)
 
+    # Template binding. NULL means "no template bound" and the demand renders
+    # through the built-in deterministic layout instead.
+    template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("letter_templates.id", ondelete="SET NULL"), index=True
+    )
+    template_sha256: Mapped[str | None] = mapped_column(String(64))
+    fidelity_report: Mapped[dict | None] = mapped_column(JSON)
+    bind_report: Mapped[dict | None] = mapped_column(JSON)
+    claim_report: Mapped[dict | None] = mapped_column(JSON)
+
     case: Mapped[Case] = relationship(back_populates="demands")
+    template: Mapped["LetterTemplate | None"] = relationship(lazy="selectin")
     sections: Mapped[list["DemandSection"]] = relationship(
         back_populates="demand",
         cascade="all, delete-orphan",
@@ -480,6 +543,30 @@ class DemandSection(Base, TimestampMixin):
     demand: Mapped[Demand] = relationship(back_populates="sections")
 
 
+class SectionClaim(Base, TimestampMixin):
+    """One atomic factual claim found in machine-drafted prose, and its grade.
+
+    Persisted so the review UI can go from a sentence in the draft to the
+    verified facts behind it, and from there to the exact passage in the source
+    document. ``start_offset``/``end_offset`` index the section body.
+    """
+
+    __tablename__ = "section_claims"
+
+    id: Mapped[str] = _pk(ids.CLAIM_CHECK)
+    demand_id: Mapped[str] = mapped_column(ForeignKey("demands.id", ondelete="CASCADE"), index=True)
+    section_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[ClaimStatus] = mapped_column(String(24), nullable=False, index=True)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    fact_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    citation_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    reason: Mapped[str | None] = mapped_column(Text)
+
+
 class ValidationIssueRecord(Base, TimestampMixin):
     __tablename__ = "validation_issues"
 
@@ -492,6 +579,90 @@ class ValidationIssueRecord(Base, TimestampMixin):
     details: Mapped[dict] = mapped_column(JSON, default=dict)
 
     demand: Mapped[Demand] = relationship(back_populates="issues")
+
+
+class RevisionProposal(Base, TimestampMixin):
+    """An AI-drafted edit an attorney asked for, before anyone accepted it.
+
+    A proposal is inert. Nothing about creating one changes the demand — the
+    document only moves when an attorney accepts it, which is a separate,
+    attributed action. That is INVARIANT-008 in the schema.
+    """
+
+    __tablename__ = "revision_proposals"
+
+    id: Mapped[str] = _pk(ids.REVISION)
+    demand_id: Mapped[str] = mapped_column(ForeignKey("demands.id", ondelete="CASCADE"), index=True)
+    section_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    constraints: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[RevisionStatus] = mapped_column(
+        String(16), default=RevisionStatus.PROPOSED, nullable=False, index=True
+    )
+    provider_name: Mapped[str | None] = mapped_column(String(64))
+    model_name: Mapped[str | None] = mapped_column(String(64))
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    #: Validation of the proposal against its own constraints.
+    validation: Mapped[dict] = mapped_column(JSON, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(64))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[str | None] = mapped_column(Text)
+
+    operations: Mapped[list["RevisionOperation"]] = relationship(
+        back_populates="proposal",
+        cascade="all, delete-orphan",
+        order_by="RevisionOperation.position",
+        lazy="selectin",
+    )
+
+    @property
+    def is_applicable(self) -> bool:
+        return self.status == RevisionStatus.PROPOSED and bool(self.validation.get("valid"))
+
+
+class RevisionOperation(Base, TimestampMixin):
+    """One bounded edit within a proposal: replace this text with that text."""
+
+    __tablename__ = "revision_operations"
+
+    id: Mapped[str] = _pk(ids.REVISION_OP)
+    proposal_id: Mapped[str] = mapped_column(
+        ForeignKey("revision_proposals.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    op: Mapped[str] = mapped_column(String(16), nullable=False)
+    paragraph_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    before_text: Mapped[str] = mapped_column(Text, nullable=False)
+    before_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_text: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    proposal: Mapped[RevisionProposal] = relationship(back_populates="operations")
+
+
+class GenerationJob(Base, TimestampMixin):
+    """An asynchronous pipeline run: extraction, generation, or both."""
+
+    __tablename__ = "generation_jobs"
+
+    id: Mapped[str] = _pk(ids.JOB)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    demand_id: Mapped[str | None] = mapped_column(
+        ForeignKey("demands.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        String(16), default=JobStatus.QUEUED, nullable=False, index=True
+    )
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    #: Append-only list of ``{"stage", "status", "detail", "at"}`` records.
+    stages: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuditEvent(Base):

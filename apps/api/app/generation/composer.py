@@ -8,8 +8,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..audit import service as audit
-from ..domain.enums import DemandStatus, SectionSource, Severity
-from ..domain.models import Demand, DemandSection, ValidationIssueRecord
+from ..domain.enums import SEVERITY_ORDER, DemandStatus, SectionSource, Severity
+from ..domain.models import Demand, DemandSection, Fact, ValidationIssueRecord
 from ..security.auth import CurrentUser
 from ..validation.engine import Issue, RenderedSection, default_engine
 from .ai.narratives import generate_narratives
@@ -161,11 +161,140 @@ def rendered_sections(demand: Demand) -> list[RenderedSection]:
     ]
 
 
+def _template_issues(session: Session, demand: Demand, context: DemandContext) -> list[Issue]:
+    """Bind the demand into its template and report anything binding broke.
+
+    Runs during validation, not at download time, so a template-fidelity failure
+    gates approval exactly like every other BLOCKING rule.
+    """
+    from ..templates import service as template_service
+
+    if not demand.template_id:
+        return []
+    try:
+        rendered = template_service.render_demand(session, demand, context)
+    except template_service.TemplateError as exc:
+        return [
+            Issue(
+                code="TEMPLATE_002",
+                severity=Severity.BLOCKING,
+                message=f"The letter could not be bound into its template: {exc}",
+                details={"error": type(exc).__name__},
+            )
+        ]
+    if rendered is None:  # pragma: no cover - guarded above
+        return []
+
+    template_service.record_reports(demand, rendered)
+    return [
+        Issue(
+            code=item.code,
+            severity=Severity(item.severity),
+            message=item.message,
+            section_key=None,
+            details=item.details,
+        )
+        for item in rendered.fidelity_report.issues
+    ]
+
+
+def _claim_issues(
+    session: Session, demand: Demand, context: DemandContext, sections: list[RenderedSection]
+) -> list[Issue]:
+    """Grade machine-drafted claims against verified evidence.
+
+    Runs alongside the deterministic literal guards in ``NARRATIVE_001``, which
+    stay exactly as they were: those catch a wrong number, these catch a
+    sentence that asserts more than the record supports.
+    """
+    from ..grounding import service as grounding
+
+    report = grounding.evaluate(context, sections)
+    grounding.persist(session, demand, report)
+    demand.claim_report = report.to_dict()
+
+    issues: list[Issue] = []
+    for graded in report.unsupported:
+        verdict = graded.verdict
+        issues.append(
+            Issue(
+                code=(
+                    grounding.CLAIM_CONTRADICTS
+                    if "negates" in verdict.reason
+                    else grounding.CLAIM_UNSUPPORTED
+                ),
+                severity=Severity.BLOCKING,
+                message=(
+                    f"Section '{graded.section_key}' asserts something the verified evidence "
+                    f"does not establish: \"{verdict.claim.text[:160]}\" — {verdict.reason}."
+                ),
+                section_key=graded.section_key,
+                details={
+                    "claim": verdict.claim.text,
+                    "start_offset": verdict.claim.start_offset,
+                    "end_offset": verdict.claim.end_offset,
+                    "score": verdict.score,
+                    "candidate_fact_ids": list(verdict.fact_ids),
+                    "escalations": list(verdict.escalations),
+                    "reason": verdict.reason,
+                },
+            )
+        )
+    for graded in report.partially_supported:
+        verdict = graded.verdict
+        issues.append(
+            Issue(
+                code=grounding.CLAIM_UNSUPPORTED,
+                severity=Severity.WARNING,
+                message=(
+                    f"Section '{graded.section_key}' contains a claim only partly covered by "
+                    f"verified evidence: \"{verdict.claim.text[:160]}\"."
+                ),
+                section_key=graded.section_key,
+                details={"claim": verdict.claim.text, "score": verdict.score},
+            )
+        )
+
+    all_facts = list(session.scalars(select(Fact).where(Fact.case_id == demand.case_id)))
+    proposed_only, superseded = grounding.stale_reliance(context, sections, all_facts)
+    for section_key, fact_id in proposed_only:
+        issues.append(
+            Issue(
+                code=grounding.CLAIM_PROPOSED_ONLY,
+                severity=Severity.BLOCKING,
+                message=(
+                    f"Section '{section_key}' relies on fact {fact_id}, which is still "
+                    "PROPOSED and has not been verified by a human."
+                ),
+                section_key=section_key,
+                details={"fact_id": fact_id},
+            )
+        )
+    for section_key, fact_id in superseded:
+        issues.append(
+            Issue(
+                code=grounding.CLAIM_SUPERSEDED,
+                severity=Severity.BLOCKING,
+                message=(
+                    f"Section '{section_key}' relies on fact {fact_id}, which has been "
+                    "superseded by a later revision."
+                ),
+                section_key=section_key,
+                details={"fact_id": fact_id},
+            )
+        )
+    return issues
+
+
 def validate_demand(
     session: Session, demand: Demand, *, actor: CurrentUser
 ) -> list[Issue]:
     context = build_context(session, demand)
-    issues = default_engine().run(context, rendered_sections(demand))
+    sections = rendered_sections(demand)
+    issues = default_engine().run(context, sections)
+    issues.extend(_claim_issues(session, demand, context, sections))
+    issues.extend(_template_issues(session, demand, context))
+    issues.sort(key=lambda i: (-SEVERITY_ORDER[i.severity], i.code))
 
     for previous in list(demand.issues):
         session.delete(previous)

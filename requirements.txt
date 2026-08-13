@@ -6,11 +6,15 @@ pydantic>=2.9
 python-multipart>=0.0.9
 python-docx>=1.1
 
+lxml>=5.0           # OOXML manipulation and canonicalization (via python-docx)
+alembic>=1.13       # schema migrations — `make migrate`
+
 # Optional, feature-gated
 pypdf>=5.0          # PDF text extraction; without it PDFs are stored as NEEDS_OCR
-anthropic>=0.40     # only needed when DLG_LLM_PROVIDER=anthropic
-alembic>=1.13       # migrations for non-SQLite deployments
+anthropic>=0.40     # only needed when DLG_LLM_PROVIDER=anthropic or
+                    # DLG_EXTRACTION_PROVIDER=anthropic
 
 # Development
 pytest>=8.0
 httpx>=0.27
+pytest-reportlog>=0.4   # per-test results for scripts/quality_gate.py

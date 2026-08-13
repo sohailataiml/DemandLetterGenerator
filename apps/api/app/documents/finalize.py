@@ -23,6 +23,7 @@ from ..generation.composer import validate_demand
 from ..generation.context import build_context
 from ..ingestion.storage import ObjectStore, artifact_key, get_object_store, sha256_hex
 from ..security.auth import CurrentUser
+from ..templates import service as template_service
 from .docx_renderer import render_docx
 
 
@@ -50,10 +51,27 @@ def build_docx(
     store: ObjectStore | None = None,
     final: bool = False,
 ) -> tuple[bytes, str, str]:
-    """Render, store, and hash the DOCX. Returns ``(data, key, sha256)``."""
+    """Render, store, and hash the DOCX. Returns ``(data, key, sha256)``.
+
+    A demand with a bound template is produced by writing into a clone of the
+    attorney's own file. Only a demand with no template falls back to the
+    built-in layout, and that fallback is never silent — binding failures raise.
+    """
     store = store or get_object_store()
     context = build_context(session, demand)
-    data = render_docx(demand, context, store=store, watermark_draft=not final)
+
+    rendered = template_service.render_demand(session, demand, context, store=store)
+    if rendered is not None:
+        template_service.record_reports(demand, rendered)
+        data = rendered.data
+        template_sha = rendered.bind_report.template_sha256
+    else:
+        # No template bound: the built-in deterministic layout. The DRAFT banner
+        # only exists on this path — stamping one into an attorney's template
+        # would be exactly the mutation Phase 1 exists to prevent.
+        data = render_docx(demand, context, store=store, watermark_draft=not final)
+        template_sha = None
+
     digest = sha256_hex(data)
     filename = "final.docx" if final else f"draft-v{demand.version}.docx"
     key = artifact_key(demand.case_id, demand.id, filename)
@@ -67,7 +85,13 @@ def build_docx(
         actor=actor,
         case_id=demand.case_id,
         demand_id=demand.id,
-        payload={"key": key, "sha256": digest, "final": final},
+        payload={
+            "key": key,
+            "sha256": digest,
+            "final": final,
+            "template_sha256": template_sha,
+            "rendered_from": "template" if rendered is not None else "builtin_layout",
+        },
     )
     session.flush()
     return data, key, digest

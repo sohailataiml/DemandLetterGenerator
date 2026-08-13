@@ -1,0 +1,14 @@
+MAX MRI RADIOLOGY
+Patient: Patrick Donahue
+Study Date: December 21, 2024
+Examination: MRI LUMBAR SPINE WITHOUT CONTRAST
+
+FINDINGS
+L5-S1: Broad-based disc extrusion measuring 9 x 10 x 5 mm, extending
+into the right lateral recess with contact upon the traversing right
+S1 nerve root.
+L4-L5: Mild disc bulge without stenosis.
+
+IMPRESSION
+1. L5-S1 disc extrusion with right S1 nerve root contact.
+2. Findings correlate with the reported right lower extremity symptoms.

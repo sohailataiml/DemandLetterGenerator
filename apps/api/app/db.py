@@ -41,7 +41,20 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def create_all() -> None:
-    """Create the schema. Development convenience; production uses Alembic."""
+    """Create the schema directly from the models.
+
+    Alembic is the migration path (``make migrate``); this exists so a
+    first-run developer and the test suite get a database without a migration
+    step. It is a no-op against a database that migrations already built, and
+    it is disabled entirely by ``DLG_AUTO_CREATE_SCHEMA=0`` — which is what a
+    deployment should set, so a missing migration fails loudly instead of being
+    papered over by a silently created table.
+    """
+    from .config import get_settings
+
+    if not get_settings().auto_create_schema:
+        return
+
     from . import domain  # noqa: F401  (import registers the mappers)
 
     Base.metadata.create_all(bind=engine)
