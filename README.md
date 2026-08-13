@@ -69,6 +69,14 @@ defaults; the interfaces behind them are swappable (see
 | Swagger | http://127.0.0.1:8000/docs |
 | Health | http://127.0.0.1:8000/health |
 
+## Deploying
+
+`render.yaml` is a Render Blueprint for a **public demo with no
+authentication** — anyone with the URL has attorney permissions, and all data
+is wiped on every redeploy. Read [DEPLOYMENT.md](DEPLOYMENT.md) before using
+it; it explains what that costs and what to change before the system holds
+anything real.
+
 ## The quality gate
 
 `make gate` runs the suites that stand behind each claim and prints one line

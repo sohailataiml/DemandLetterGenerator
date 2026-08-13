@@ -1,0 +1,109 @@
+# Render Blueprint — PUBLIC DEMO deployment.
+#
+# ⚠ READ THIS BEFORE DEPLOYING
+#
+# This blueprint deploys the application with NO AUTHENTICATION. Identity is the
+# X-User-Id / X-User-Role header pair, which the server trusts from the caller
+# (see apps/api/app/security/auth.py). Anyone who has the URL can send
+# `X-User-Role: attorney`, approve demands, and read every uploaded document.
+#
+# That is a deliberate, accepted tradeoff for a throwaway demo. It means:
+#
+#   * upload SYNTHETIC case material only — never real client or medical data
+#   * treat the URL as public even if you do not share it
+#   * do not point this at a real database
+#
+# Storage is ephemeral by design here: SQLite and uploaded files live on the
+# instance's disk and are wiped on every deploy. The service re-seeds a demo
+# case on boot, so a fresh deploy is immediately usable and never holds rows
+# pointing at files that no longer exist.
+#
+# To deploy:
+#   1. Render Dashboard → New → Blueprint → pick this repository
+#   2. Deploy. Both services start; the API seeds a demo case.
+#   3. Copy the two service URLs, then set the values marked `sync: false`:
+#        demand-api  DLG_CORS_ORIGINS        = https://<demand-web url>
+#        demand-web  NEXT_PUBLIC_API_BASE_URL = https://<demand-api url>
+#   4. Redeploy both. (Render cannot template one service's URL into another's
+#      env var, so this second pass is unavoidable.)
+
+services:
+  # ------------------------------------------------------------------ backend
+  - type: web
+    name: demand-api
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    # Seed before serving so the demo is never an empty case list. The seed is
+    # a no-op when the database already has a case.
+    startCommand: >-
+      python scripts/seed_if_empty.py &&
+      uvicorn app.main:app --app-dir apps/api --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+
+      # Ephemeral by choice. Both paths are wiped on every deploy.
+      - key: DLG_DATABASE_URL
+        value: sqlite:////tmp/dlg/demand.db
+      - key: DLG_STORAGE_ROOT
+        value: /tmp/dlg/storage
+      # No Alembic step runs here, so the schema is built from the models.
+      - key: DLG_AUTO_CREATE_SCHEMA
+        value: "1"
+
+      # Offline providers: deterministic, no API key, no network egress.
+      # Set DLG_LLM_PROVIDER=anthropic and add ANTHROPIC_API_KEY to use Claude.
+      - key: DLG_LLM_PROVIDER
+        value: stub
+      - key: DLG_EXTRACTION_PROVIDER
+        value: pattern
+
+      # The job runner is in-process, which is why this stays on one instance.
+      - key: DLG_JOB_RUNNER
+        value: thread
+
+      - key: DLG_FIRM_NAME
+        value: Stalwart Law Group
+      - key: DLG_FIRM_ADDRESS
+        value: 1055 W 7th St, Suite 2800|Los Angeles, CA 90017
+
+      # Set to the demand-web URL after the first deploy. Never a wildcard.
+      - key: DLG_CORS_ORIGINS
+        sync: false
+
+      # Seeds one demo case on boot when the database is empty.
+      - key: DLG_DEMO_SEED
+        value: "1"
+
+  # ----------------------------------------------------------------- frontend
+  - type: web
+    name: demand-web
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    rootDir: apps/web
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "20.18.0"
+
+      # Set to the demand-api URL after the first deploy.
+      - key: NEXT_PUBLIC_API_BASE_URL
+        sync: false
+
+      # The identity the browser announces. The server trusts it — that is the
+      # accepted gap this deployment carries.
+      - key: NEXT_PUBLIC_USER_ID
+        value: demo_attorney
+      - key: NEXT_PUBLIC_USER_ROLE
+        value: attorney
+
+      # Renders the "no authentication" banner in the UI. Leave this on.
+      - key: NEXT_PUBLIC_DEMO_BANNER
+        value: "1"

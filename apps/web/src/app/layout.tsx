@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import "./globals.css";
 import { Providers } from "./providers";
+import { DemoBanner } from "@/components/demo-banner";
 
 export const metadata: Metadata = {
   title: "Demand Letter Review",
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
+        <DemoBanner />
         <Providers>{children}</Providers>
       </body>
     </html>
