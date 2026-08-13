@@ -1,14 +1,21 @@
-"""Seed a demo case, draft a demand, validate it, and write the DOCX.
+"""Seed a demo case and run the whole pipeline end to end.
 
-    python scripts/demo_case.py
+    python scripts/demo_case.py                # built-in layout
+    python scripts/demo_case.py --template     # bind the firm's .docx template
+    python scripts/demo_case.py --extract      # AI-extract facts from materials
 
 Runs entirely against the local SQLite database and filesystem storage — no
-services to start, no containers. Prints the rendered letter and the validation
-report so you can see the whole pipeline in one go.
+services to start, no containers. Prints the rendered letter, the validation
+report and the readiness numbers, so the whole pipeline is visible in one go.
+
+``--extract`` demonstrates that extracted facts arrive PROPOSED and are ignored
+by generation until a human verifies them: the demo verifies its own facts
+separately, and the extracted ones are left in the review queue on purpose.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,7 +49,35 @@ def put(client, url, payload):
     return response.json()
 
 
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+TEMPLATE_PATH = REPO_ROOT / "apps" / "api" / "tests" / "fixtures" / "golden_case" / "template.docx"
+MATERIALS_DIR = REPO_ROOT / "apps" / "api" / "tests" / "fixtures" / "golden_case" / "case-materials"
+
+
+def upload_materials(client, case_id: str) -> list[dict]:
+    """Upload the golden-case materials so extraction has something to read."""
+    uploaded = []
+    for path in sorted(MATERIALS_DIR.glob("*.txt")):
+        response = client.post(
+            f"/v1/cases/{case_id}/documents",
+            files={"file": (path.name, path.read_bytes(), "text/plain")},
+            headers=ATTORNEY,
+        )
+        if response.status_code == 201:
+            uploaded.append(response.json())
+    return uploaded
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--template", action="store_true", help="bind the golden .docx template"
+    )
+    parser.add_argument(
+        "--extract", action="store_true", help="run AI extraction over the case materials"
+    )
+    arguments = parser.parse_args()
+
     with TestClient(app) as client:
         reference = f"DEMO-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
         case = post(
@@ -219,7 +254,46 @@ def main() -> int:
             )
             client.post(f"/v1/facts/{fact['id']}/verify", headers=ATTORNEY)
 
+        if arguments.extract:
+            materials = upload_materials(client, case_id)
+            reports = post(client, f"/v1/cases/{case_id}/extract", {}, expect=202)
+            proposed = sum(report["proposed"] for report in reports)
+            rejected = sum(len(report["rejected"]) for report in reports)
+            flagged = sum(len(report["suspected_injection_chunks"]) for report in reports)
+            print()
+            print(
+                f"extraction: {len(materials)} document(s) read, "
+                f"{proposed} fact(s) PROPOSED, "
+                f"{rejected} candidate(s) rejected for an unresolvable citation, "
+                f"{flagged} chunk(s) containing instruction-shaped text"
+            )
+            print("  none of them are verified — they are waiting for a human.")
+
         demand = post(client, f"/v1/cases/{case_id}/demands", {})
+
+        if arguments.template:
+            with TEMPLATE_PATH.open("rb") as handle:
+                response = client.post(
+                    f"/v1/cases/{case_id}/templates",
+                    files={"file": ("template.docx", handle.read(), DOCX_MIME)},
+                    data={"name": "Firm standard demand"},
+                    headers=ATTORNEY,
+                )
+            assert response.status_code == 201, response.text
+            template = response.json()
+            print()
+            print(
+                f"template {template['id']} — {template['block_count']} blocks, "
+                f"{len(template['slots'])} dynamic slots, "
+                f"headers {template['header_parts']}, footers {template['footer_parts']}"
+            )
+            bound = client.post(
+                f"/v1/demands/{demand['id']}/template",
+                json={"template_id": template["id"]},
+                headers=ATTORNEY,
+            )
+            assert bound.status_code == 200, bound.text
+
         demand = post(
             client, f"/v1/demands/{demand['id']}/generate", {}, expect=200
         )
@@ -236,6 +310,24 @@ def main() -> int:
         print(f"\nvalidation: {len(issues)} issue(s)")
         for issue in issues:
             print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+
+        detail = client.get(f"/v1/demands/{demand['id']}", headers=ATTORNEY).json()
+        if detail.get("claim_report"):
+            claims = detail["claim_report"]
+            print()
+            print(
+                f"claim grounding: {claims['claims_checked']} claim(s) checked, "
+                f"{claims['supported']} supported, {claims['unsupported']} unsupported"
+            )
+        if detail.get("fidelity_report"):
+            fidelity = detail["fidelity_report"]
+            blocks = fidelity["required_blocks"]
+            print(
+                f"template fidelity: {blocks['preserved']}/{blocks['expected']} required blocks "
+                f"preserved, {fidelity['styles_changed']} style change(s), "
+                f"{fidelity['headers_changed']} header change(s), "
+                f"{fidelity['footers_changed']} footer change(s)"
+            )
 
         blocking = [i for i in issues if i["severity"] == "BLOCKING"]
         if not blocking:

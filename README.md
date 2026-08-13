@@ -1,227 +1,272 @@
 # Demand Letter Generation and Review
 
-A backend for assembling personal injury demand letters from attorney-verified
-facts. The design premise, taken from `ARCHITECTURE.md`: **AI is a drafting
-assistant, not the source of truth.** Totals, dates, claim metadata, and
-settlement conditions are computed deterministically; a model only writes
-narrative prose, and even that is re-checked against the fact store before
-anything can be approved.
+Generates a personal injury demand letter **into the attorney's own Word
+template**, populated only from facts a human has verified against the evidence.
 
-Runs locally on Python 3.11+ and Node 18+ with SQLite and the filesystem.
-**No Docker is required for the current MVP** — no Postgres, no Redis, no
-object-store service.
+> **Evidence determines facts. Code determines calculations and document
+> structure. AI determines only prose.**
+
+That sentence is the whole design. A model writes narrative paragraphs and
+nothing else: it does not decide what is true, it does not add up a bill, it
+does not choose where a paragraph goes on the page, and it cannot approve
+anything. Every claim it writes is checked back against the verified fact store
+before an attorney can sign.
+
+## What it does
+
+```
+attorney's template.docx ──┐
+                           ├──► analyzed once: blocks, styles, headers,
+case materials (PDF/DOCX/  │    footers, page setup, dynamic slots
+TXT) ──► AI extraction ────┤
+              │            │
+       PROPOSED facts      │
+              │            │
+    attorney verifies ─────┤
+              │            │
+       VERIFIED facts ─────┤
+              │            │
+     ┌────────┴────────┐   │
+     │                 │   │
+deterministic      AI narrative
+ calculations         prose
+     │                 │   │
+     │        claim grounding check
+     │                 │   │
+     └────────┬────────┘   │
+              ▼            ▼
+        bound into the ORIGINAL OOXML
+              │
+     template-fidelity validation
+              │
+     server-side approval gate
+              │
+       final-demand.docx
+```
 
 ## Quick start
 
 ```bash
-# 1. Backend
-pip install -r requirements.txt
-python -m uvicorn app.main:app --reload --app-dir apps/api --port 8000
+git clone https://github.com/sohailataiml/DemandLetterGenerator
+cd DemandLetterGenerator
+cp .env.example .env
 
-# 2. Demo case (run once; the UI has an empty state that says so)
-python scripts/demo_case.py
-
-# 3. Frontend
-cd apps/web
-npm install
-npm run dev
+make setup      # pip install + npm install
+make migrate    # create the schema
+make demo       # seed a demo case
+make up         # API on :8000   (make web on :3000 in another shell)
+make test       # backend + frontend
+make gate       # the quality gate scorecard
 ```
+
+No Docker, no Redis, no Postgres required. SQLite and the filesystem are the
+defaults; the interfaces behind them are swappable (see
+[ARCHITECTURE.md](ARCHITECTURE.md)).
 
 | Surface | URL |
 | --- | --- |
 | Review UI | http://localhost:3000 |
-| Backend Swagger | http://127.0.0.1:8000/docs |
-| Health check | http://127.0.0.1:8000/health |
+| Swagger | http://127.0.0.1:8000/docs |
+| Health | http://127.0.0.1:8000/health |
 
-```bash
-python -m pytest            # backend tests
-cd apps/web && npm test     # frontend tests
+## The quality gate
+
+`make gate` runs the suites that stand behind each claim and prints one line
+per claim. Nothing in it is asserted by the script — every number is measured.
+
+```
+Demand Letter Quality Gate
+
+  Unit/integration tests           PASS
+  Fact lifecycle invariants        PASS
+  Unverified fact escapes          0
+  Arithmetic delegated to LLM      0
+  Unsupported claims               0
+  Prompt injection escapes         0
+  Template mutations               0
+  Blocking validation issues       0
+  Template fidelity (golden doc)   PASS
+  Migrations match the models      PASS
 ```
 
-## Local architecture
+## The four rules that carry the weight
+
+1. **Nothing verifies itself.** AI extraction produces `PROPOSED` facts. A human
+   moves them to `VERIFIED`, and only with a document citation. Generation loads
+   verified facts and nothing else.
+2. **A verified fact is immutable.** There is no endpoint that edits one — a
+   correction is a new revision that supersedes the original, so what an
+   attorney approved stays on the record.
+3. **The model never does arithmetic.** `app/damages/calculator.py` is the only
+   source of monetary totals. A pending bill (`amount = NULL`) is excluded from
+   the total and disclosed, never counted as zero.
+4. **The template is preserved, not recreated.** Generation writes into a clone
+   of the uploaded `.docx`. Headers, footers, styles, numbering, page setup,
+   table geometry and every untouched paragraph keep the exact XML they arrived
+   with, and a fidelity check proves it before approval.
+
+## Architecture
 
 ```
 Next.js (apps/web, :3000)
-   ↓  typed fetch client, TanStack Query, X-User-Id / X-User-Role headers
+   │  typed fetch client, TanStack Query
 FastAPI (apps/api, :8000)
-   ↓
-SQLite (var/demand.db) + local filesystem object store (var/storage)
-   ↓
-Stub drafter (default) or Claude provider
+   │
+SQLite + filesystem object store (dev) │ Postgres + S3-compatible (prod-ready)
+   │
+Pattern extractor + stub drafter (default) │ Claude (DLG_LLM_PROVIDER=anthropic)
 ```
 
-## How a letter gets made
+| Package | Responsibility |
+| --- | --- |
+| `templates/` | analyze a .docx, bind into a clone of it, prove nothing else changed |
+| `extraction/` | case materials → chunks → candidates → **PROPOSED** facts |
+| `provenance/` | resolve a quoted passage to exact character offsets in a page |
+| `grounding/` | segment drafted prose into claims, grade each against verified facts |
+| `revisions/` | attorney AI edits as validated patches, applied only on acceptance |
+| `jobs/` | asynchronous pipeline runs with SSE progress |
+| `facts/` | `PROPOSED → VERIFIED / REJECTED / SUPERSEDED` lifecycle |
+| `damages/` | deterministic `Decimal` arithmetic — the only source of totals |
+| `validation/` | rule framework, rule set, unsupported-literal guards |
+| `documents/` | DOCX/PDF artifacts, approval, locking, hashing |
+| `audit/` | append-only event trail |
 
-```
-documents ─┐
-records ───┼─→ verified fact store ─→ context ─┬─→ deterministic template ─┐
-bills ─────┘         ▲                         │                          ├─→ sections
-                     │                         └─→ AI narrative slots ────┘      │
-              human verification                                                 ▼
-                                                                       validation engine
-                                                                                 │
-                                                                    no BLOCKING issues?
-                                                                                 ▼
-                                                              attorney approval → locked DOCX + SHA-256
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how these fit together and
+[docs/ADRs/](docs/ADRs/) for why each decision was made.
 
-Four rules carry most of the weight:
+## Demo script
 
-1. **Nothing verifies itself.** Extracted facts arrive `PROPOSED`; a human moves
-   them to `VERIFIED`, and only with at least one document/page citation.
-2. **A verified fact is immutable.** Corrections create a new revision that
-   supersedes the original, so what an attorney approved stays on the record.
-3. **The LLM never does arithmetic.** `app/damages/calculator.py` is the only
-   source of monetary totals, and a pending bill (`amount = NULL`) is excluded
-   from the total and disclosed — never counted as zero.
-4. **Generated prose is re-checked.** Every dollar amount and date in narrative
-   text must appear in the structured case data, or validation blocks approval.
+The end-to-end scenario the system is built for:
 
-## The review UI
-
-`apps/web` is an attorney workspace, not an admin CRUD screen. One case, ten
-sections, a persistent context rail:
-
-- **Case list** — client, claim number, date of loss, demand status, blocking
-  issue count, last modified. Empty state tells you to run `demo_case.py`.
-- **Overview / Parties / Liability** — insured and driver are shown as distinct
-  roles on distinct people, with the recorded relationship. Names are never
-  reconciled automatically.
-- **Medical** — chronological timeline built from records, expandable per entry,
-  each linking to its source document.
-- **Bills** — a financial review table. A bill with no amount reads **Pending**,
-  never `$0.00`, and the page states that pending charges are excluded from the
-  known total. Every figure comes from the backend's decimal calculator; the UI
-  formats decimal *strings* and performs no arithmetic.
-- **Facts** — the lifecycle is the interface: PROPOSED facts can be verified or
-  rejected; VERIFIED facts have no edit affordance at all, only *Supersede*,
-  which proposes a new revision and leaves the original authoritative until that
-  revision is itself verified.
-- **Documents / source evidence** — click any fact or citation and the rail
-  shows the document, page, extracted text, and the cited passage highlighted.
-- **Demand** — the letter section by section with generation state, facts used,
-  and per-section validation. Section context (issues → facts → sources) fills
-  the right rail. Sections are editable because the backend persists edits; a
-  locked demand is read-only.
-- **Validation** — issues grouped BLOCKING / WARNING / INFO with rule code,
-  offending values, and an action that navigates to the field. `PARTY_001` is
-  presented as something to confirm, not an error.
-- **Approval** — a confirmation dialog, then the backend decides. A 409 renders
-  the exact blocking issues it returned. Nothing is approved client-side.
-- **Audit** — chronological, actor-attributed, payloads collapsed by default.
-
-Configuration lives in `apps/web/.env.example`:
-
-```
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
-NEXT_PUBLIC_USER_ID=attorney_1
-NEXT_PUBLIC_USER_ROLE=attorney
-```
-
-CORS is explicit, not a wildcard: `DLG_CORS_ORIGINS` defaults to
-`http://localhost:3000|http://127.0.0.1:3000` with credentials off.
-
-## Layout
-
-```
-apps/web/src/
-  app/                 routes: / (case list), /cases/[caseId] (workspace)
-  lib/api/             typed client, TanStack Query hooks, response types
-  lib/format.ts        money/date formatting — string-based, no float math
-  components/case/     workspace shell, header, evidence rail, ten tabs
-  components/ui/       panels, badges, buttons, modal, toasts, skeletons
-
-apps/api/app/
-  domain/        ORM models, enums, exact-decimal Money type, API schemas
-  ingestion/     upload scan → immutable store → text extraction → page split → classify
-  facts/         PROPOSED → VERIFIED / REJECTED / SUPERSEDED lifecycle
-  medical/       chronological timeline built from records, not prose
-  damages/       deterministic money arithmetic
-  generation/    context builder, deterministic template, AI narrative layer
-  validation/    rule framework + rule set + unsupported-literal text guard
-  documents/     DOCX rendering, PDF conversion, approval + locking
-  security/      role-based access control
-  audit/         append-only event trail
-  api/v1/        HTTP surface
-apps/api/tests/  57 tests
-apps/web/src/**/*.test.tsx  50 tests
-scripts/         runnable demo
-```
+1. Upload the firm's real demand letter as a template — `POST /v1/cases/{id}/templates`.
+   The analyzer reports its blocks, sections and dynamic slots.
+2. Upload case materials — police report, records, imaging, bills.
+3. Run extraction (`POST /v1/cases/{id}/extract-async`). Every proposed fact
+   carries a document, a page, and **character offsets** into that page.
+4. Verify or reject each fact in the Facts tab. Nothing else can.
+5. Generate (`POST /v1/cases/{id}/generate` → `202` + a job id; watch
+   `GET /v1/jobs/{id}/events`).
+6. Review the draft. The Demand tab shows readiness counts, the pipeline stage,
+   and any blocking issues with a link to the offending section.
+7. Ask for a revision: *"Make the liability section more forceful without
+   changing any facts."* The model proposes; the constraint checker validates;
+   you see a diff. **The letter has not changed.**
+8. Accept or reject. Only an attorney can accept.
+9. Approve. The server re-validates, refuses while any BLOCKING issue stands,
+   then locks and hashes the exact approved bytes.
+10. Download the DOCX — the firm's template, filled in.
 
 ## Validation rules
 
 | Code | Severity | Checks |
 |---|---|---|
-| `DATE_001` | BLOCKING | Demand expiration is after the letter date (the inconsistency in the supplied letter) |
+| `DATE_001` | BLOCKING | Demand expiration is after the letter date |
 | `DATE_002` | BLOCKING | No treatment predates the date of loss |
 | `DATE_003` | WARNING | No treatment is dated in the future |
 | `DATE_004` | BLOCKING | Accident record and claim date of loss agree |
-| `PARTY_001` | BLOCKING / WARNING | A client is recorded; a driver who differs from the named insured has the relationship documented |
-| `CLAIM_001` | BLOCKING | The claim number is stated, and identically everywhere |
-| `MONEY_001` | BLOCKING | The printed medical total equals the calculator's sum |
-| `MONEY_002` | BLOCKING | Pending bills are disclosed and the total is stated as incomplete |
+| `PARTY_001` | BLOCKING / WARNING | Client recorded; a driver who differs from the insured has the relationship documented |
+| `CLAIM_001` (party) | BLOCKING | Claim number stated, and identically everywhere |
+| `MONEY_001` | BLOCKING | Printed medical total equals the calculator's sum |
+| `MONEY_002` | BLOCKING | Pending bills disclosed and the total stated as incomplete |
 | `MONEY_003` | WARNING | A policy-limits demand rests on a confirmed limit |
 | `MONEY_004` | BLOCKING | A PENDING bill carries no amount |
-| `SOURCE_001` | BLOCKING | Machine-drafted medical sections cite verified facts, and only existing ones |
+| `SOURCE_001` | BLOCKING | Machine-drafted medical sections cite verified facts |
 | `SOURCE_002` | BLOCKING | No section relies on a superseded or unverified fact |
-| `NARRATIVE_001` | BLOCKING / WARNING | No unsupported amount or date in non-template text (names warn — the check is heuristic) |
+| `NARRATIVE_001` | BLOCKING / WARNING | No unsupported or impossible amount, date or name in generated text |
 | `NARRATIVE_002` | BLOCKING | Every narrative section was actually drafted |
 | `DOCUMENT_001` | BLOCKING | Every expiration reference in the letter matches |
+| `CLAIM_001` | BLOCKING | A factual assertion the verified evidence does not establish |
+| `CLAIM_002` | BLOCKING | A section relies on a fact that is still PROPOSED |
+| `CLAIM_003` | BLOCKING | A claim negates what the verified evidence states |
+| `CLAIM_004` | BLOCKING | A section relies on a SUPERSEDED fact |
+| `TEMPLATE_001` | BLOCKING | Required section order changed |
+| `TEMPLATE_002` | BLOCKING | Required template block missing, or binding failed |
+| `TEMPLATE_003` | BLOCKING | Header/footer structure changed |
+| `TEMPLATE_004` | BLOCKING | Page setup changed |
+| `TEMPLATE_005` | BLOCKING | Protected style or numbering definitions changed |
+| `TEMPLATE_006` | BLOCKING | Protected table structure changed |
+| `TEMPLATE_007` | WARNING | Rendered pagination differs from the reference |
+| `TEMPLATE_008` | BLOCKING | An immutable OOXML block was modified |
+| `TEMPLATE_009` | BLOCKING | A template slot has no case data behind it |
 
-Adding a rule is a dataclass with `code`, `severity`, and `evaluate(context, sections)`,
-registered in `ALL_RULES`.
+Two `CLAIM_001` codes exist: the original claim-number rule and the newer
+claim-grounding rule. They are disambiguated by `section_key` in the payload.
+This is a known wart, kept rather than renumbered because the older code is
+already stored on historical demands.
 
 ## The AI layer
 
-`DLG_LLM_PROVIDER` selects the drafter:
+`DLG_LLM_PROVIDER` selects the drafter, `DLG_EXTRACTION_PROVIDER` the extractor.
 
-- **`stub`** (default) — `GroundedStubProvider` assembles sentences from verified
-  fact summaries. It cannot hallucinate because it only concatenates what it was
-  handed. This is what the test suite runs against, so tests need no API key and
-  no network.
-- **`anthropic`** — Claude via the official SDK (`claude-opus-5`), with adaptive
-  thinking, structured JSON output, and per-section retrieval limited to the
-  fact types that section may discuss. Set `ANTHROPIC_API_KEY`.
+- **`stub` / `pattern`** (defaults) — deterministic, offline, and incapable of
+  inventing anything. The drafter concatenates verified fact summaries; the
+  extractor reads labelled patterns. This is what the test suite runs against,
+  so tests need no API key and no network.
+- **`anthropic`** — Claude (`claude-opus-5`) with structured JSON output and
+  adaptive thinking. Set `ANTHROPIC_API_KEY`.
 
-Either way the model's claimed `used_fact_ids` are filtered to facts it was
-actually given, and the prose passes through the same validation.
+Either way the output goes through the same checks: claimed fact ids are
+filtered to facts actually supplied, quoted passages must exist in the stored
+document, and every claim is graded against the verified fact store.
 
-## Auth — read this before deploying
+## Security
 
-Identity is currently two headers, `X-User-Id` and `X-User-Role`, which trusts
-the caller — and the web app sends them from `NEXT_PUBLIC_*` values, so anyone
-with the page can pick their own role. It is a development stand-in. Replace
-`current_user()` in `app/security/auth.py` with verified session/OIDC tokens and
-have the frontend send that session instead; the `require_roles` call sites
-throughout the API stay as they are.
+Uploaded case material is **untrusted data, never instruction** — see
+[SECURITY.md](SECURITY.md). The prompt says so, and code enforces it: an
+extractor cannot verify a fact, cannot cite a passage that is not in the
+document, and cannot put a number in the letter. `tests/adversarial/` contains
+the injection payloads that prove it.
 
-Roles: `admin`, `attorney`, `paralegal`, `reviewer`, `readonly`. Only an
-attorney can approve.
+**Auth is a development stand-in.** Identity is two headers, `X-User-Id` and
+`X-User-Role`, which trusts the caller. Replace `current_user()` in
+`app/security/auth.py` with verified session/OIDC tokens before deploying; the
+`require_roles` call sites stay as they are.
 
 ## Known gaps
 
-Honest list of what the spec asks for that is not here yet:
+An honest list of what the spec asks for that is not here:
 
-- **No document upload from the UI.** Documents are ingested through the API;
-  the UI reviews and downloads them.
-- **Highlighting is text-matching.** The evidence panel locates a citation's
-  excerpt in the page text. When the excerpt is a paraphrase it says so rather
-  than highlighting the wrong span — the API exposes no character offsets.
-- **No sentence-level provenance.** Facts are cited per section, not per
-  sentence; clicking a sentence shows the section's facts.
+- **Collaborative editing is not implemented.** Phase 12 (TipTap/Yjs/WebSockets)
+  was scoped as a stretch goal and deliberately left out rather than half-built.
+  Version history and actor attribution *are* present through the audit trail
+  and the revision proposal records.
+- **Jobs run in-process.** The default runner executes on a worker thread of the
+  API process. Job state lives entirely in the database, so the runner is
+  swappable, but a multi-process deployment needs a real queue — see the module
+  docstring in `app/jobs/runner.py` for exactly what changes.
+- **Claim grounding is lexical.** Coverage is measured on content words, so a
+  paraphrase using entirely different vocabulary scores low and is flagged for
+  review rather than silently accepted. That is the safe direction to be wrong.
+- **Contradiction detection is narrow.** `CLAIM_003` fires when a claim negates
+  a phrase the evidence states plainly. It is not general-purpose entailment.
+- **No document upload from the UI.** Documents and templates are ingested
+  through the API; the UI reviews and downloads them.
 - **PDF requires LibreOffice.** `GET /demands/{id}/pdf` shells out to `soffice`
-  and returns 503 with a clear message if it is not installed, rather than
-  producing a lookalike. DOCX is unaffected.
-- **Scanned PDFs are not OCR'd.** They ingest and store fine, marked
-  `NEEDS_OCR`, with no indexed text.
+  and returns 503 with a clear message if it is not installed. DOCX is unaffected.
+- **Scanned PDFs are not OCR'd.** They ingest and store fine, marked `NEEDS_OCR`.
 - **Malware scanning is a signature check** (EICAR) plus type/size validation.
-  `_external_scan()` in `app/ingestion/scanner.py` is the hook for a real
-  scanner; setting `DLG_CLAMAV_HOST` without implementing it fails uploads
-  closed on purpose.
-- **No AI extraction pipeline yet.** Facts are created through the API. The
-  fact store, provenance, and review workflow that an extractor would feed are
-  in place.
-- **Schema is created with `create_all`,** not migrations. Alembic is in
-  `requirements.txt` for when the schema needs to survive a change.
-- **Encryption at rest, tenant isolation, and signed URLs** are deployment
+  `_external_scan()` in `app/ingestion/scanner.py` is the hook for a real scanner.
+- **Encryption at rest, tenant isolation and signed URLs** are deployment
   concerns not addressed in code.
+
+## Layout
+
+```
+apps/api/app/
+  templates/     analyzer, manifest, slots, binder, fidelity
+  extraction/    chunker, prompts, providers, service
+  provenance/    citation span resolution
+  grounding/     claim segmentation and grading
+  revisions/     constraints, providers, proposal lifecycle
+  jobs/          store, pipeline, runner
+  facts/ damages/ medical/ validation/ documents/ generation/ audit/ security/
+apps/api/tests/
+  invariants/    INVARIANT-001..008 as tests
+  adversarial/   prompt injection, tampering, bypass attempts
+  fixtures/golden_case/   template.docx, expected-demand.docx, case-materials/
+apps/web/src/
+  components/case/   workspace, readiness, revisions, evidence, ten tabs
+alembic/           migrations
+scripts/           demo, fixtures, quality gate
+docs/ADRs/         why each decision was made
+```
