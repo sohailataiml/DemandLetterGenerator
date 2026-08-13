@@ -238,11 +238,31 @@ export interface SourceDocumentDetail extends SourceDocument {
   pages: DocumentPage[];
 }
 
+/**
+ * A citation. When `match_kind` is "exact" or "normalized" the offsets index
+ * the page text and the highlight is authoritative; "approximate" means the
+ * span is a best guess and the UI must say so rather than imply precision.
+ */
 export interface FactSource {
   id: string;
   document_id: string;
   page_number: number | null;
   excerpt: string | null;
+  start_offset: number | null;
+  end_offset: number | null;
+  quoted_text_sha256: string | null;
+  match_kind: "exact" | "normalized" | "approximate" | null;
+}
+
+export interface ExtractionMetadata {
+  provider?: string;
+  model?: string | null;
+  prompt_version?: string;
+  document_id?: string;
+  page_number?: number;
+  match_kind?: string;
+  low_confidence?: boolean;
+  [key: string]: unknown;
 }
 
 export interface Fact {
@@ -261,6 +281,7 @@ export interface Fact {
   reviewed_by: string | null;
   reviewed_at: string | null;
   rejection_reason: string | null;
+  extraction_metadata: ExtractionMetadata | null;
   sources: FactSource[];
 }
 
@@ -283,6 +304,44 @@ export interface ValidationIssue {
   details: Record<string, unknown>;
 }
 
+/** Counts from the template-fidelity comparison, produced at validation time. */
+export interface FidelityReport {
+  template_hash: string;
+  required_blocks: { expected: number; preserved: number };
+  styles_changed: number;
+  headers_changed: number;
+  footers_changed: number;
+  numbering_changed: number;
+  page_setup_changed: boolean;
+  blocking_issues: Array<{ code: string; message: string; details: Record<string, unknown> }>;
+  warnings: Array<{ code: string; message: string; details: Record<string, unknown> }>;
+}
+
+export interface UnsupportedClaim {
+  section_key: string;
+  text: string;
+  start_offset: number;
+  end_offset: number;
+  status: ClaimStatus;
+  score: number;
+  fact_ids: string[];
+  citation_ids: string[];
+  reason: string;
+  escalations: string[];
+}
+
+export type ClaimStatus = "SUPPORTED" | "PARTIALLY_SUPPORTED" | "UNSUPPORTED";
+
+/** How machine-drafted prose scored against the verified fact store. */
+export interface ClaimReport {
+  claims_checked: number;
+  supported: number;
+  partially_supported: number;
+  unsupported: number;
+  sections: string[];
+  unsupported_claims: UnsupportedClaim[];
+}
+
 export interface Demand {
   id: string;
   case_id: string;
@@ -300,8 +359,149 @@ export interface Demand {
   approved_at: string | null;
   locked: boolean;
   created_by: string;
+  template_id: string | null;
+  template_sha256: string | null;
+  fidelity_report: FidelityReport | null;
+  claim_report: ClaimReport | null;
   sections: DemandSection[];
   issues: ValidationIssue[];
+}
+
+// --------------------------------------------------------------------- templates
+
+export type SlotKind = "inline" | "block" | "row";
+
+export interface TemplateSlot {
+  name: string;
+  kind: SlotKind;
+  block_index: number;
+  section_key: string | null;
+  fields: string[];
+  resolvable: boolean;
+}
+
+export interface TemplateSection {
+  key: string;
+  title: string;
+  start_index: number;
+  end_index: number;
+}
+
+export interface LetterTemplate {
+  id: string;
+  case_id: string | null;
+  name: string;
+  original_filename: string;
+  sha256: string;
+  structure_sha256: string;
+  size_bytes: number;
+  block_count: number;
+  slot_names: string[];
+  uploaded_by: string;
+  created_at: string;
+}
+
+export interface LetterTemplateDetail extends LetterTemplate {
+  slots: TemplateSlot[];
+  sections: TemplateSection[];
+  header_parts: string[];
+  footer_parts: string[];
+  page_setup: Record<string, number | string | null>;
+  unknown_slots: string[];
+}
+
+// --------------------------------------------------------------------- revisions
+
+export type RevisionStatus =
+  | "PROPOSED"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "INVALID"
+  | "SUPERSEDED";
+
+export interface RevisionOperation {
+  op: string;
+  paragraph_id: string;
+  position: number;
+  before_hash: string;
+  after_text: string;
+  fact_ids: string[];
+}
+
+export interface RevisionConstraints {
+  preserve_facts: boolean;
+  preserve_amounts: boolean;
+  preserve_dates: boolean;
+  allow_new_facts: boolean;
+  preserve_literals: string[];
+}
+
+export interface RevisionProposal {
+  id: string;
+  demand_id: string;
+  section_key: string;
+  instruction: string;
+  constraints: Partial<RevisionConstraints>;
+  status: RevisionStatus;
+  provider_name: string | null;
+  model_name: string | null;
+  prompt_version: string | null;
+  validation: { valid?: boolean; violations?: Array<{ code: string; message: string }>;
+                explanation?: string };
+  requested_by: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  created_at: string;
+  operations: RevisionOperation[];
+}
+
+export interface RevisionProposalDetail {
+  proposal: RevisionProposal;
+  before: string;
+  after: string;
+  unified_diff: string;
+  violations: Array<{ code: string; message: string; details?: Record<string, unknown> }>;
+  valid: boolean;
+}
+
+// -------------------------------------------------------------------------- jobs
+
+export type JobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+
+export interface JobStage {
+  stage: string;
+  status: "running" | "completed" | "skipped" | "failed";
+  detail?: string;
+  at: string;
+}
+
+export interface GenerationJob {
+  id: string;
+  case_id: string;
+  demand_id: string | null;
+  kind: string;
+  status: JobStatus;
+  stages: JobStage[];
+  result: Record<string, unknown> | null;
+  error: string | null;
+  requested_by: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ExtractionReport {
+  document_id: string;
+  provider: string;
+  model: string | null;
+  prompt_version: string;
+  chunks: number;
+  candidates: number;
+  proposed: number;
+  proposed_fact_ids: string[];
+  rejected: Array<Record<string, unknown>>;
+  suspected_injection_chunks: number[];
 }
 
 export interface AuditEvent {

@@ -81,8 +81,12 @@ describe("demand tab", () => {
     await user.click(dialog.getByRole("button", { name: /approve and lock/i }));
 
     expect(await screen.findByText(/The backend refused approval/i)).toBeInTheDocument();
-    expect(screen.getByText("DATE_001")).toBeInTheDocument();
-    expect(screen.getByText(/Section 'liability' was not drafted/)).toBeInTheDocument();
+    // The code now appears in two places: the refusal returned by the approve
+    // call, and the standing blocked-approval panel above the letter.
+    expect(screen.getAllByText("DATE_001").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Section 'liability' was not drafted/).length,
+    ).toBeGreaterThan(0);
   });
 
   it("handles an unavailable PDF converter without pretending a PDF exists", async () => {

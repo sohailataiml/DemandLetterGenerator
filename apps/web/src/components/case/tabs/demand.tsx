@@ -6,7 +6,9 @@ import {
   useCase,
   useCreateDemand,
   useDemands,
+  useDocuments,
   useEditSection,
+  useFacts,
   useGenerateDemand,
   useValidateDemand,
   useApproveDemand,
@@ -25,7 +27,10 @@ import {
 } from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/modal";
 import { useToast } from "@/components/ui/toast";
+import { AUTH_USER_ROLE } from "@/lib/api/client";
 import { useDemandDownloads } from "../demand-actions";
+import { BlockedApprovalPanel, DemandReadiness, PipelineStrip } from "../readiness";
+import { RevisionPanel } from "../revisions";
 import type { DemandSection, ValidationIssue } from "@/lib/api/types";
 import type { TabProps } from "../workspace";
 
@@ -211,6 +216,8 @@ export function DemandTab({
 }: TabProps & { onValidated?: () => void }) {
   const caseQuery = useCase(caseId);
   const demandsQuery = useDemands(caseId);
+  const factsQuery = useFacts(caseId);
+  const documentsQuery = useDocuments(caseId);
   const createDemand = useCreateDemand(caseId);
   const generate = useGenerateDemand(caseId);
   const validate = useValidateDemand(caseId);
@@ -336,6 +343,21 @@ export function DemandTab({
 
   return (
     <div className="space-y-4">
+      <PipelineStrip
+        demand={demand}
+        facts={factsQuery.data ?? []}
+        documentCount={documentsQuery.data?.length ?? 0}
+      />
+      <DemandReadiness
+        demand={demand}
+        facts={factsQuery.data ?? []}
+        issues={demand.issues}
+        isLoading={factsQuery.isLoading}
+      />
+      <BlockedApprovalPanel
+        issues={demand.issues}
+        onNavigate={(issue) => issue.section_key && selectSection(issue.section_key)}
+      />
       <Panel>
         <PanelHeader
           title={`Demand letter · version ${demand.version}`}
@@ -544,6 +566,20 @@ export function DemandTab({
           </>
         )}
       </Panel>
+
+      {focusedSection && !BLOCK_SECTIONS.has(focusedSection) ? (
+        <RevisionPanel
+          caseId={caseId}
+          demandId={demand.id}
+          sectionKey={focusedSection}
+          sectionTitle={
+            demand.sections.find((section) => section.key === focusedSection)?.title ??
+            focusedSection
+          }
+          locked={demand.locked}
+          canAccept={AUTH_USER_ROLE === "attorney" || AUTH_USER_ROLE === "admin"}
+        />
+      ) : null}
 
       <Modal
         open={confirmingApproval}

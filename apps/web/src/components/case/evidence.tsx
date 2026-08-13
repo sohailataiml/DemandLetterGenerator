@@ -9,6 +9,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { useDocument, useFacts } from "@/lib/api/hooks";
+import { cn } from "@/lib/cn";
 import { formatDate, humanize } from "@/lib/format";
 import {
   Badge,
@@ -25,7 +26,13 @@ import type { Fact, FactSource } from "@/lib/api/types";
 
 export type EvidenceSelection =
   | { kind: "fact"; factId: string }
-  | { kind: "document"; documentId: string; page?: number | null; excerpt?: string | null }
+  | {
+      kind: "document";
+      documentId: string;
+      page?: number | null;
+      excerpt?: string | null;
+      span?: CitationSpan | null;
+    }
   | null;
 
 interface EvidenceContextValue {
@@ -54,13 +61,54 @@ export function useEvidence(): EvidenceContextValue {
   );
 }
 
-/** Highlight the cited passage inside the page text, when it can be located. */
-function HighlightedText({ text, excerpt }: { text: string; excerpt?: string | null }) {
-  if (!excerpt) {
+export interface CitationSpan {
+  start_offset: number | null;
+  end_offset: number | null;
+  match_kind: "exact" | "normalized" | "approximate" | null;
+}
+
+/**
+ * Highlight the cited passage inside the page text.
+ *
+ * The backend records character offsets when it could locate the quote in the
+ * stored page, so the first choice is to use them — no searching, no guessing.
+ * Searching for the excerpt is the fallback for older citations that have no
+ * offsets, and an approximate match is labelled as approximate rather than
+ * presented as if it were exact.
+ */
+function HighlightedText({
+  text,
+  excerpt,
+  span,
+}: {
+  text: string;
+  excerpt?: string | null;
+  span?: CitationSpan | null;
+}) {
+  if (!excerpt && !span?.start_offset) {
     return <p className="whitespace-pre-wrap text-meta leading-6 text-ink-body">{text}</p>;
   }
-  const index = text.toLowerCase().indexOf(excerpt.trim().toLowerCase());
-  if (index < 0) {
+
+  const hasOffsets =
+    span != null &&
+    span.start_offset != null &&
+    span.end_offset != null &&
+    span.start_offset >= 0 &&
+    span.end_offset <= text.length &&
+    span.end_offset > span.start_offset;
+
+  const start = hasOffsets
+    ? (span!.start_offset as number)
+    : excerpt
+      ? text.toLowerCase().indexOf(excerpt.trim().toLowerCase())
+      : -1;
+  const end = hasOffsets
+    ? (span!.end_offset as number)
+    : start >= 0 && excerpt
+      ? start + excerpt.trim().length
+      : -1;
+
+  if (start < 0 || end <= start) {
     return (
       <>
         <div className="rounded border border-warn-200 bg-warn-50 px-2 py-1.5">
@@ -76,14 +124,31 @@ function HighlightedText({ text, excerpt }: { text: string; excerpt?: string | n
       </>
     );
   }
+
+  const approximate = span?.match_kind === "approximate" || !hasOffsets;
+
   return (
-    <p className="whitespace-pre-wrap text-meta leading-6 text-ink-body">
-      {text.slice(0, index)}
-      <mark className="rounded bg-warn-100 px-0.5 text-ink">
-        {text.slice(index, index + excerpt.trim().length)}
-      </mark>
-      {text.slice(index + excerpt.trim().length)}
-    </p>
+    <>
+      <p className="whitespace-pre-wrap text-meta leading-6 text-ink-body">
+        {text.slice(0, start)}
+        <mark
+          data-testid="citation-highlight"
+          data-match-kind={span?.match_kind ?? "search"}
+          className={cn(
+            "rounded px-0.5 text-ink",
+            approximate ? "bg-warn-100" : "bg-ok-100 ring-1 ring-inset ring-ok-200",
+          )}
+        >
+          {text.slice(start, end)}
+        </mark>
+        {text.slice(end)}
+      </p>
+      <p className="mt-1 text-2xs text-ink-faint">
+        {approximate
+          ? "Approximate match — this highlight is the closest passage, not an exact citation."
+          : "Exact citation — these are the recorded character offsets in this page."}
+      </p>
+    </>
   );
 }
 
@@ -91,10 +156,12 @@ function DocumentEvidence({
   documentId,
   page,
   excerpt,
+  span,
 }: {
   documentId: string;
   page?: number | null;
   excerpt?: string | null;
+  span?: CitationSpan | null;
 }) {
   const { data, isLoading, error } = useDocument(documentId);
 
@@ -148,7 +215,7 @@ function DocumentEvidence({
                 Page {item.page_number}
               </p>
               {item.text ? (
-                <HighlightedText text={item.text} excerpt={excerpt} />
+                <HighlightedText text={item.text} excerpt={excerpt} span={span} />
               ) : (
                 <Note>No extractable text on this page.</Note>
               )}
@@ -247,6 +314,7 @@ function FactEvidence({ caseId, factId }: { caseId: string; factId: string }) {
             documentId={source.document_id}
             page={source.page_number}
             excerpt={source.excerpt}
+            span={source}
           />
         </div>
       ) : (
@@ -276,6 +344,7 @@ export function EvidencePanel({ caseId }: { caseId: string }) {
             documentId={selection.documentId}
             page={selection.page}
             excerpt={selection.excerpt}
+            span={selection.span}
           />
         )}
       </div>

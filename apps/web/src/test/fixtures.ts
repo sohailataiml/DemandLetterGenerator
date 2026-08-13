@@ -182,8 +182,18 @@ export const facts: Fact[] = [
     reviewed_by: "attorney_1",
     reviewed_at: "2026-01-11T09:00:00",
     rejection_reason: null,
+    extraction_metadata: null,
     sources: [
-      { id: "fsrc_1", document_id: "doc_1", page_number: 2, excerpt: "disc extrusion at L5-S1" },
+      {
+        id: "fsrc_1",
+        document_id: "doc_1",
+        page_number: 2,
+        excerpt: "disc extrusion at L5-S1",
+        start_offset: 42,
+        end_offset: 65,
+        quoted_text_sha256: "a".repeat(64),
+        match_kind: "exact",
+      },
     ],
   },
   {
@@ -202,7 +212,27 @@ export const facts: Fact[] = [
     reviewed_by: null,
     reviewed_at: null,
     rejection_reason: null,
-    sources: [{ id: "fsrc_2", document_id: "doc_1", page_number: 1, excerpt: null }],
+    extraction_metadata: {
+      provider: "pattern",
+      model: null,
+      prompt_version: "extraction_v1",
+      document_id: "doc_1",
+      page_number: 1,
+      match_kind: "exact",
+      low_confidence: false,
+    },
+    sources: [
+      {
+        id: "fsrc_2",
+        document_id: "doc_1",
+        page_number: 1,
+        excerpt: null,
+        start_offset: null,
+        end_offset: null,
+        quoted_text_sha256: null,
+        match_kind: null,
+      },
+    ],
   },
 ];
 
@@ -223,6 +253,17 @@ export const demand: Demand = {
   approved_at: null,
   locked: false,
   created_by: "attorney_1",
+  template_id: null,
+  template_sha256: null,
+  fidelity_report: null,
+  claim_report: {
+    claims_checked: 6,
+    supported: 6,
+    partially_supported: 0,
+    unsupported: 0,
+    sections: ["liability", "medical_summary"],
+    unsupported_claims: [],
+  },
   sections: [
     {
       id: "sec_1",

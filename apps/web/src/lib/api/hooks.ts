@@ -21,8 +21,14 @@ import type {
   Demand,
   Fact,
   FactStatus,
+  GenerationJob,
+  LetterTemplate,
+  LetterTemplateDetail,
   Party,
   Provider,
+  RevisionConstraints,
+  RevisionProposal,
+  RevisionProposalDetail,
   SettlementTerms,
   SourceDocument,
   SourceDocumentDetail,
@@ -50,6 +56,10 @@ export const queryKeys = {
   demand: (demandId: string) => ["demand", demandId] as const,
   caseAudit: (id: string) => ["case", id, "audit"] as const,
   demandAudit: (demandId: string) => ["demand", demandId, "audit"] as const,
+  templates: (id: string) => ["case", id, "templates"] as const,
+  revisions: (demandId: string) => ["demand", demandId, "revisions"] as const,
+  jobs: (id: string) => ["case", id, "jobs"] as const,
+  job: (jobId: string) => ["job", jobId] as const,
 };
 
 /** Endpoints that legitimately 404 when the record has not been entered yet. */
@@ -300,6 +310,140 @@ export function useEditSection(caseId: string) {
         method: "PATCH",
         body: { body },
       }),
+    onSuccess: invalidate,
+  });
+}
+
+// ------------------------------------------------------------------- templates
+
+export function useTemplates(caseId: string) {
+  return useQuery<LetterTemplate[], ApiError>({
+    queryKey: queryKeys.templates(caseId),
+    queryFn: () => apiFetch<LetterTemplate[]>(`/v1/cases/${caseId}/templates`),
+    enabled: Boolean(caseId),
+  });
+}
+
+export function useBindTemplate(caseId: string) {
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<
+    LetterTemplateDetail,
+    ApiError,
+    { demandId: string; templateId: string }
+  >({
+    mutationFn: ({ demandId, templateId }) =>
+      apiFetch<LetterTemplateDetail>(`/v1/demands/${demandId}/template`, {
+        method: "POST",
+        body: { template_id: templateId },
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+// ------------------------------------------------------------------- revisions
+
+export function useRevisions(demandId: string | null) {
+  return useQuery<RevisionProposal[], ApiError>({
+    queryKey: queryKeys.revisions(demandId ?? "none"),
+    queryFn: () => apiFetch<RevisionProposal[]>(`/v1/demands/${demandId}/revisions`),
+    enabled: Boolean(demandId),
+  });
+}
+
+export interface ProposeRevisionInput {
+  demandId: string;
+  section_key: string;
+  instruction: string;
+  constraints?: Partial<RevisionConstraints>;
+}
+
+/**
+ * Ask for a revision. This returns a diff — it does not change the document.
+ * The section only moves when `useAcceptRevision` is called by an attorney.
+ */
+export function useProposeRevision(caseId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<RevisionProposalDetail, ApiError, ProposeRevisionInput>({
+    mutationFn: ({ demandId, ...body }) =>
+      apiFetch<RevisionProposalDetail>(`/v1/demands/${demandId}/revisions`, {
+        method: "POST",
+        body,
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.revisions(variables.demandId) });
+    },
+  });
+}
+
+export function useAcceptRevision(caseId: string) {
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<RevisionProposalDetail, ApiError, { proposalId: string; note?: string }>({
+    mutationFn: ({ proposalId, note }) =>
+      apiFetch<RevisionProposalDetail>(`/v1/revisions/${proposalId}/accept`, {
+        method: "POST",
+        body: { note: note ?? null },
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRejectRevision(caseId: string) {
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<RevisionProposal, ApiError, { proposalId: string; note?: string }>({
+    mutationFn: ({ proposalId, note }) =>
+      apiFetch<RevisionProposal>(`/v1/revisions/${proposalId}/reject`, {
+        method: "POST",
+        body: { note: note ?? null },
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+// ------------------------------------------------------------------------ jobs
+
+export function useJobs(caseId: string) {
+  return useQuery<GenerationJob[], ApiError>({
+    queryKey: queryKeys.jobs(caseId),
+    queryFn: () => apiFetch<GenerationJob[]>(`/v1/cases/${caseId}/jobs`),
+    enabled: Boolean(caseId),
+  });
+}
+
+/** Polls while the job is live. The SSE stream is used by `useJobStream`. */
+export function useJob(jobId: string | null) {
+  return useQuery<GenerationJob, ApiError>({
+    queryKey: queryKeys.job(jobId ?? "none"),
+    queryFn: () => apiFetch<GenerationJob>(`/v1/jobs/${jobId}`),
+    enabled: Boolean(jobId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "QUEUED" || status === "RUNNING" ? 1000 : false;
+    },
+  });
+}
+
+export interface StartGenerationInput {
+  demand_id?: string;
+  template_id?: string;
+  letter_date?: string;
+  extract?: boolean;
+  regenerate_sections?: string[];
+}
+
+export function useStartGeneration(caseId: string) {
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<GenerationJob, ApiError, StartGenerationInput>({
+    mutationFn: (body) =>
+      apiFetch<GenerationJob>(`/v1/cases/${caseId}/generate`, { method: "POST", body }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useStartExtraction(caseId: string) {
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<GenerationJob, ApiError, { document_ids?: string[] }>({
+    mutationFn: (body) =>
+      apiFetch<GenerationJob>(`/v1/cases/${caseId}/extract-async`, { method: "POST", body }),
     onSuccess: invalidate,
   });
 }
