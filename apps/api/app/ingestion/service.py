@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import service as audit
 from ..domain.enums import DocumentType
-from ..domain.models import DocumentPage, SourceDocument
+from ..domain.models import DocumentPage, FactSource, SourceDocument
 from ..security.auth import CurrentUser
 from . import classifier
 from .extraction import extract
@@ -25,6 +25,18 @@ class DuplicateDocumentError(ValueError):
             f"document with sha256 {existing.sha256} already ingested as {existing.id}"
         )
         self.existing = existing
+
+
+class DocumentInUseError(ValueError):
+    """Facts cite this document, so removing it would orphan their provenance."""
+
+    def __init__(self, document: SourceDocument, fact_ids: list[str]) -> None:
+        super().__init__(
+            f"{len(fact_ids)} fact(s) cite {document.original_filename}; "
+            "reject or supersede them before removing the document"
+        )
+        self.document = document
+        self.fact_ids = fact_ids
 
 
 def ingest_document(
@@ -101,3 +113,51 @@ def ingest_document(
     )
     session.flush()
     return document
+
+
+def remove_document(
+    session: Session,
+    *,
+    document: SourceDocument,
+    actor: CurrentUser,
+    store: ObjectStore | None = None,
+) -> None:
+    """Withdraw an uploaded file — but never one the evidence rests on.
+
+    An attorney who uploads the wrong PDF needs a way to take it back. What
+    they must not be able to do is remove a document a fact cites, because the
+    citation is the only thing standing between a verified fact and an
+    unsourced assertion. Any fact source pointing here — proposed, verified or
+    rejected alike — refuses the removal and names what is in the way.
+    """
+    store = store or get_object_store()
+
+    cited_by = list(
+        session.scalars(
+            select(FactSource.fact_id).where(FactSource.document_id == document.id).distinct()
+        )
+    )
+    if cited_by:
+        raise DocumentInUseError(document, cited_by)
+
+    audit.record(
+        session,
+        event="DOCUMENT_REMOVED",
+        actor=actor,
+        case_id=document.case_id,
+        subject_id=document.id,
+        payload={
+            "sha256": document.sha256,
+            "original_filename": document.original_filename,
+            "document_type": str(document.document_type),
+            "page_count": document.page_count,
+        },
+    )
+    # Audit first: the row is about to disappear, and an audit trail that only
+    # records successful deletions is not an audit trail.
+    session.flush()
+
+    storage_key = document.storage_key
+    session.delete(document)  # cascades to document_pages
+    session.flush()
+    store.delete(storage_key)

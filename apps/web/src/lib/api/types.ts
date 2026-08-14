@@ -234,6 +234,19 @@ export interface DocumentPage {
   text: string;
 }
 
+/**
+ * What the server will accept. The uploader reads this instead of hardcoding a
+ * format list, so it can never offer a type ingestion would reject.
+ */
+export interface UploadLimits {
+  max_upload_bytes: number;
+  allowed_mime_types: string[];
+  allowed_extensions: string[];
+  max_template_bytes: number;
+  template_mime_types: string[];
+  template_extensions: string[];
+}
+
 export interface SourceDocumentDetail extends SourceDocument {
   pages: DocumentPage[];
 }

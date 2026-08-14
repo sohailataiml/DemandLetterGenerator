@@ -1,138 +1,131 @@
 "use client";
 
-import { useDocuments } from "@/lib/api/hooks";
-import { API_BASE_URL, ApiError, apiDownload, saveBlob } from "@/lib/api/client";
-import { formatBytes, formatDate, formatDateTime, humanize, shortHash } from "@/lib/format";
-import {
-  Badge,
-  Button,
-  EmptyState,
-  ErrorState,
-  Note,
-  Panel,
-  PanelHeader,
-  SkeletonRows,
-} from "@/components/ui/primitives";
-import { useToast } from "@/components/ui/toast";
-import { useEvidence } from "../evidence";
+/**
+ * Documents: where a case actually starts.
+ *
+ * Two uploads with opposite trust roles, kept visually and structurally apart:
+ * the template controls how the letter looks and is never read for facts; the
+ * case materials supply the facts and never touch the formatting. Below them,
+ * the one action that turns evidence into reviewable facts.
+ */
+
+import { useDemands, useDocuments, useFacts, useTemplates } from "@/lib/api/hooks";
+import { Note, Panel, PanelHeader } from "@/components/ui/primitives";
+import { CaseSetup } from "../upload/case-setup";
+import { ExtractionPanel } from "../upload/extraction";
+import { MaterialsCard } from "../upload/materials-card";
+import { TemplateCard } from "../upload/template-card";
 import type { TabProps } from "../workspace";
 
-const STATUS_TONE: Record<string, "success" | "warning" | "danger" | "muted"> = {
-  extracted: "success",
-  needs_ocr: "warning",
-  extraction_failed: "danger",
-  stored: "muted",
-};
+export function DocumentsTab({ caseId, goToTab }: TabProps) {
+  const templatesQuery = useTemplates(caseId);
+  const documentsQuery = useDocuments(caseId);
+  const factsQuery = useFacts(caseId);
+  const demandsQuery = useDemands(caseId);
 
-export function DocumentsTab({ caseId }: TabProps) {
-  const { data, isLoading, error, refetch } = useDocuments(caseId);
-  const { show } = useEvidence();
-  const toast = useToast();
+  const templates = templatesQuery.data ?? [];
+  const documents = documentsQuery.data ?? [];
+  const facts = factsQuery.data ?? [];
+  const demand = demandsQuery.data?.[0] ?? null;
 
-  const download = async (documentId: string, filename: string) => {
-    try {
-      const file = await apiDownload(`/v1/documents/${documentId}/content`);
-      saveBlob(file.blob, file.filename || filename);
-      toast.push({ tone: "success", title: "Original downloaded", description: file.filename });
-    } catch (caught) {
-      const message = caught instanceof ApiError ? caught.message : String(caught);
-      toast.push({ tone: "error", title: "Download failed", description: message });
-    }
-  };
+  const settled = !templatesQuery.isLoading && !documentsQuery.isLoading;
+  const firstRun = settled && templates.length === 0 && documents.length === 0;
 
   return (
-    <Panel>
-      <PanelHeader
-        title="Source documents"
-        description="Originals are content-addressed and immutable. Extracted text is a separate, derived view."
-        actions={<span className="text-2xs text-ink-faint">{API_BASE_URL}</span>}
-      />
-
-      {isLoading ? <SkeletonRows rows={4} /> : null}
-      <ErrorState
-        error={error ? { message: error.message, status: error.status } : null}
-        onRetry={() => refetch()}
-      />
-      {data && data.length === 0 ? (
-        <EmptyState
-          title="No documents uploaded"
-          description="Facts cannot be verified without a source document to cite."
+    <div className="space-y-4">
+      {!firstRun ? (
+        <CaseSetup
+          templates={templates}
+          documents={documents}
+          facts={facts}
+          demand={demand}
         />
-      ) : null}
+      ) : (
+        <Panel>
+          <PanelHeader
+            title="Start here"
+            description="Add the attorney's demand template and the evidence for this case."
+          />
+          <ol className="divide-y divide-line-soft">
+            <Step
+              number={1}
+              title="Demand template"
+              body="Upload the Word document whose formatting should be preserved. The finished letter is written into a copy of it."
+            />
+            <Step
+              number={2}
+              title="Case materials"
+              body="Upload medical records, bills, reports and other evidence. Extraction reads these; it cannot propose a fact without a passage to cite."
+            />
+            <Step
+              number={3}
+              title="Verify facts"
+              body="AI-extracted facts arrive as proposals. An attorney verifies each one before it can appear in the demand."
+              waiting
+            />
+          </ol>
+        </Panel>
+      )}
 
-      {data && data.length > 0 ? (
-        <ul className="divide-y divide-line-soft">
-          {data.map((document) => (
-            <li key={document.id} className="px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-body font-medium text-ink">
-                  {document.original_filename}
-                </span>
-                <Badge tone="neutral">{humanize(document.document_type)}</Badge>
-                <Badge tone={STATUS_TONE[document.status] ?? "muted"}>
-                  {humanize(document.status)}
-                </Badge>
-              </div>
+      <TemplateCard caseId={caseId} />
+      <MaterialsCard caseId={caseId} />
+      <ExtractionPanel caseId={caseId} goToTab={goToTab} />
 
-              <dl className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-2xs text-ink-faint">
-                <div className="flex gap-1">
-                  <dt>Provider</dt>
-                  <dd className="font-medium text-ink-body">{document.provider_name ?? "—"}</dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>Document date</dt>
-                  <dd className="font-medium text-ink-body">
-                    {formatDate(document.document_date)}
-                  </dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>Pages</dt>
-                  <dd className="font-medium text-ink-body">{document.page_count}</dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>Size</dt>
-                  <dd className="font-medium text-ink-body">{formatBytes(document.size_bytes)}</dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>Uploaded</dt>
-                  <dd className="font-medium text-ink-body">
-                    {formatDateTime(document.created_at)} by {document.uploaded_by}
-                  </dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>SHA-256</dt>
-                  <dd className="font-mono font-medium text-ink-body" title={document.sha256}>
-                    {shortHash(document.sha256)}
-                  </dd>
-                </div>
-              </dl>
+      <Panel>
+        <PanelHeader title="How these files are treated" dense />
+        <div className="grid gap-4 px-4 py-3 sm:grid-cols-2">
+          <div>
+            <p className="eyebrow">Template</p>
+            <p className="mt-1 text-meta leading-6 text-ink-muted">
+              Controls structure and formatting. Read as a Word document and nothing else — no
+              macros run, no embedded content is executed, and no sentence in it becomes a fact.
+            </p>
+          </div>
+          <div>
+            <p className="eyebrow">Case materials</p>
+            <p className="mt-1 text-meta leading-6 text-ink-muted">
+              Provide evidence. Their text is untrusted data, never an instruction: an extractor
+              cannot verify its own output, cannot cite a passage that is not in the file, and
+              cannot put a number in the letter.
+            </p>
+          </div>
+        </div>
+        <div className="border-t border-line-soft px-4 py-2.5">
+          <Note>
+            Uploads are screened for type, size and known malware signatures, and stored under a
+            content hash rather than the name they arrived with.
+          </Note>
+        </div>
+      </Panel>
+    </div>
+  );
+}
 
-              {document.extraction_note ? (
-                <div className="mt-1.5">
-                  <Note>{document.extraction_note}</Note>
-                </div>
-              ) : null}
-
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => show({ kind: "document", documentId: document.id })}
-                >
-                  Review extracted text
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => download(document.id, document.original_filename)}
-                >
-                  Download original
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </Panel>
+function Step({
+  number,
+  title,
+  body,
+  waiting = false,
+}: {
+  number: number;
+  title: string;
+  body: string;
+  waiting?: boolean;
+}) {
+  return (
+    <li className="flex gap-3 px-4 py-3">
+      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-sunken text-2xs font-semibold text-ink-muted">
+        {number}
+      </span>
+      <div className="min-w-0">
+        <p className="text-body font-medium text-ink">{title}</p>
+        <p className="mt-0.5 text-meta leading-6 text-ink-muted">{body}</p>
+        {waiting ? (
+          <p className="mt-1 text-2xs uppercase tracking-[0.07em] text-ink-faint">
+            Waiting for documents
+          </p>
+        ) : null}
+      </div>
+    </li>
   );
 }

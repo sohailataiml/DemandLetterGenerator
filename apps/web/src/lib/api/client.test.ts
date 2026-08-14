@@ -27,7 +27,7 @@ describe("api client", () => {
   it("turns a 403 into an ApiError flagged as an auth failure", async () => {
     mockApi({ "/v1/cases": { status: 403, body: { detail: "role may not perform this action" } } });
 
-    const error = await apiFetch("/v1/cases").catch((caught) => caught);
+    const error = (await apiFetch("/v1/cases").catch((caught) => caught)) as ApiError;
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error.status).toBe(403);
@@ -50,7 +50,9 @@ describe("api client", () => {
       },
     });
 
-    const error = await apiFetch("/v1/demands/d1/approve", { method: "POST" }).catch((c) => c);
+    const error = (await apiFetch("/v1/demands/d1/approve", { method: "POST" }).catch(
+      (c) => c,
+    )) as ApiError;
 
     expect(error.isConflict).toBe(true);
     expect(error.blockingIssues).toHaveLength(1);
@@ -65,7 +67,7 @@ describe("api client", () => {
       },
     });
 
-    const error = await apiDownload("/v1/demands/d1/pdf").catch((caught) => caught);
+    const error = (await apiDownload("/v1/demands/d1/pdf").catch((caught) => caught)) as ApiError;
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error.isUnavailable).toBe(true);
@@ -80,7 +82,7 @@ describe("api client", () => {
       }),
     );
 
-    const error = await apiFetch("/v1/cases").catch((caught) => caught);
+    const error = (await apiFetch("/v1/cases").catch((caught) => caught)) as ApiError;
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error.status).toBe(0);

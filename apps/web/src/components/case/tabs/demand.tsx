@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  useBindTemplate,
   useCase,
   useCreateDemand,
   useDemands,
@@ -10,6 +11,7 @@ import {
   useEditSection,
   useFacts,
   useGenerateDemand,
+  useTemplates,
   useValidateDemand,
   useApproveDemand,
 } from "@/lib/api/hooks";
@@ -218,7 +220,9 @@ export function DemandTab({
   const demandsQuery = useDemands(caseId);
   const factsQuery = useFacts(caseId);
   const documentsQuery = useDocuments(caseId);
+  const templatesQuery = useTemplates(caseId);
   const createDemand = useCreateDemand(caseId);
+  const bindTemplate = useBindTemplate(caseId);
   const generate = useGenerateDemand(caseId);
   const validate = useValidateDemand(caseId);
   const approve = useApproveDemand(caseId);
@@ -244,46 +248,107 @@ export function DemandTab({
     );
   }
 
+  const template = templatesQuery.data?.[0];
+
+  /** Create the draft, bind the case's template if it has one, then generate. */
+  const createAndGenerate = () =>
+    createDemand.mutate(
+      {},
+      {
+        onSuccess: (created) => {
+          const runGeneration = () =>
+            generate.mutate(
+              { demandId: created.id },
+              {
+                onSuccess: () => toast.push({ tone: "success", title: "Draft generated" }),
+                onError: (error) =>
+                  toast.push({
+                    tone: "error",
+                    title: "Generation failed",
+                    description: error.message,
+                  }),
+              },
+            );
+
+          if (!template) {
+            runGeneration();
+            return;
+          }
+          bindTemplate.mutate(
+            { demandId: created.id, templateId: template.id },
+            {
+              onSuccess: runGeneration,
+              onError: (error) =>
+                toast.push({
+                  tone: "error",
+                  title: "Could not bind the template",
+                  description: error.message,
+                }),
+            },
+          );
+        },
+        onError: (error) =>
+          toast.push({
+            tone: "error",
+            title: "Could not create draft",
+            description: error.message,
+          }),
+      },
+    );
+
+  const generating = createDemand.isPending || bindTemplate.isPending || generate.isPending;
+
   if (!demand) {
+    // No template is not a server-side block — the backend will render through
+    // its built-in layout. It is, however, almost certainly not what the
+    // attorney wants, so the template route is the primary action and the
+    // alternative says plainly what it produces.
+    if (!template && !templatesQuery.isLoading) {
+      return (
+        <Panel>
+          <PanelHeader title="Demand letter" />
+          <EmptyState
+            title="Demand template required"
+            description={
+              <>
+                <p>
+                  Upload the attorney&apos;s Word template before generating the final demand
+                  document, so the letter keeps the firm&apos;s own structure and formatting.
+                </p>
+                <p className="mt-2">
+                  Generating without one produces a letter in the built-in layout instead — usable
+                  for review, but not the firm&apos;s document.
+                </p>
+              </>
+            }
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="primary" onClick={() => goToTab("documents")}>
+                  Upload template
+                </Button>
+                <Button variant="secondary" disabled={generating} onClick={createAndGenerate}>
+                  Generate without a template
+                </Button>
+              </div>
+            }
+          />
+        </Panel>
+      );
+    }
+
     return (
       <Panel>
         <PanelHeader title="Demand letter" />
         <EmptyState
           title="No demand drafted"
-          description="Create a draft, then generate it from the verified facts on file."
+          description={
+            template
+              ? `The letter will be written into ${template.original_filename}, using the verified facts on file.`
+              : "Create a draft, then generate it from the verified facts on file."
+          }
           action={
-            <Button
-              variant="primary"
-              disabled={createDemand.isPending}
-              onClick={() =>
-                createDemand.mutate(
-                  {},
-                  {
-                    onSuccess: (created) =>
-                      generate.mutate(
-                        { demandId: created.id },
-                        {
-                          onSuccess: () =>
-                            toast.push({ tone: "success", title: "Draft generated" }),
-                          onError: (error) =>
-                            toast.push({
-                              tone: "error",
-                              title: "Generation failed",
-                              description: error.message,
-                            }),
-                        },
-                      ),
-                    onError: (error) =>
-                      toast.push({
-                        tone: "error",
-                        title: "Could not create draft",
-                        description: error.message,
-                      }),
-                  },
-                )
-              }
-            >
-              Create and generate draft
+            <Button variant="primary" disabled={generating} onClick={createAndGenerate}>
+              {generating ? "Generating…" : "Create and generate draft"}
             </Button>
           }
         />
@@ -444,6 +509,47 @@ export function DemandTab({
             <Button size="sm" onClick={() => goToTab("validation")}>
               Review issues
             </Button>
+          </div>
+        ) : null}
+
+        {!demand.template_id && !demand.locked ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-warn-200 bg-warn-50 px-4 py-3">
+            <p className="text-body text-warn-800">
+              {template
+                ? `No template is bound to this version, so it renders in the built-in layout. ${template.original_filename} is on file for this case.`
+                : "No attorney template has been uploaded, so this letter renders in the built-in layout rather than the firm's document."}
+            </p>
+            {template ? (
+              <Button
+                size="sm"
+                disabled={bindTemplate.isPending}
+                onClick={() =>
+                  bindTemplate.mutate(
+                    { demandId: demand.id, templateId: template.id },
+                    {
+                      onSuccess: () =>
+                        toast.push({
+                          tone: "success",
+                          title: "Template bound",
+                          description: "Regenerate, then re-validate to check its fidelity.",
+                        }),
+                      onError: (error) =>
+                        toast.push({
+                          tone: "error",
+                          title: "Could not bind the template",
+                          description: error.message,
+                        }),
+                    },
+                  )
+                }
+              >
+                {bindTemplate.isPending ? "Binding…" : "Use this template"}
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => goToTab("documents")}>
+                Upload template
+              </Button>
+            )}
           </div>
         ) : null}
 

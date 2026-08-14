@@ -12,8 +12,11 @@ import type {
   Damages,
   Demand,
   Fact,
+  LetterTemplate,
+  LetterTemplateDetail,
   Party,
   SourceDocumentDetail,
+  UploadLimits,
 } from "@/lib/api/types";
 
 export const CASE_ID = "case_test0001";
@@ -327,6 +330,65 @@ export const documentDetail: SourceDocumentDetail = {
   ],
 };
 
+export const uploadLimits: UploadLimits = {
+  max_upload_bytes: 50 * 1024 * 1024,
+  allowed_mime_types: [
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+  ],
+  allowed_extensions: [".docx", ".pdf", ".txt"],
+  max_template_bytes: 20 * 1024 * 1024,
+  template_mime_types: [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ],
+  template_extensions: [".docx"],
+};
+
+export const letterTemplate: LetterTemplate = {
+  id: "tmpl_1",
+  case_id: CASE_ID,
+  name: "Firm demand template",
+  original_filename: "demand-template.docx",
+  sha256: "b".repeat(64),
+  structure_sha256: "c".repeat(64),
+  size_bytes: 38400,
+  block_count: 16,
+  slot_names: ["section.liability", "client_full_name"],
+  uploaded_by: "attorney_1",
+  created_at: "2026-01-04T09:00:00",
+};
+
+export const letterTemplateDetail: LetterTemplateDetail = {
+  ...letterTemplate,
+  slots: [
+    {
+      name: "client_full_name",
+      kind: "inline",
+      block_index: 2,
+      section_key: null,
+      fields: [],
+      resolvable: true,
+    },
+    {
+      name: "section.liability",
+      kind: "block",
+      block_index: 7,
+      section_key: "liability",
+      fields: [],
+      resolvable: true,
+    },
+  ],
+  sections: [
+    { key: "liability", title: "LIABILITY", start_index: 6, end_index: 8 },
+    { key: "medical_treatment", title: "MEDICAL TREATMENT", start_index: 9, end_index: 12 },
+  ],
+  header_parts: ["word/header1.xml"],
+  footer_parts: ["word/footer1.xml"],
+  page_setup: { width: 12240, height: 15840 },
+  unknown_slots: [],
+};
+
 /** Route table covering everything the case workspace requests. */
 export const workspaceRoutes = {
   "/v1/case-summaries": { body: [caseSummary] },
@@ -370,5 +432,9 @@ export const workspaceRoutes = {
   [`/v1/cases/${CASE_ID}/vehicles`]: { body: [] },
   [`/v1/cases/${CASE_ID}/accident`]: { status: 404, body: { detail: "no accident record on file" } },
   [`/v1/cases/${CASE_ID}/audit`]: { body: [] },
+  [`/v1/cases/${CASE_ID}/templates`]: { body: [letterTemplate] },
+  [`/v1/cases/${CASE_ID}/jobs`]: { body: [] },
+  "/v1/templates/tmpl_1": { body: letterTemplateDetail },
+  "/v1/upload-limits": { body: uploadLimits },
   "/v1/documents/doc_1": { body: documentDetail },
 };

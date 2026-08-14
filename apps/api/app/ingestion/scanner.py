@@ -16,12 +16,43 @@ from ..config import get_settings
 # flagged by scanners that inspect source.
 EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$" + b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
 _MAGIC = {
     b"%PDF-": "application/pdf",
-    b"PK\x03\x04": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    b"PK\x03\x04": DOCX_MIME,
     b"\xff\xd8\xff": "image/jpeg",
     b"\x89PNG\r\n\x1a\n": "image/png",
 }
+
+#: Filename suffixes this module recognises, per MIME type. The UI reads these
+#: through ``/v1/upload-limits`` so it can never advertise a format the scanner
+#: would go on to reject. Extending the allowed set means editing this map, not
+#: a list somewhere in the frontend.
+EXTENSIONS_BY_MIME: dict[str, tuple[str, ...]] = {
+    "application/pdf": (".pdf",),
+    DOCX_MIME: (".docx",),
+    "application/msword": (".doc",),
+    "image/jpeg": (".jpg", ".jpeg"),
+    "image/png": (".png",),
+    "text/plain": (".txt",),
+    "text/markdown": (".md",),
+}
+
+
+def allowed_mime_types() -> list[str]:
+    return sorted(get_settings().allowed_upload_mime)
+
+
+def allowed_extensions() -> list[str]:
+    """Every suffix an upload may carry, for the file picker's accept list."""
+    permitted = get_settings().allowed_upload_mime
+    return sorted(
+        suffix
+        for mime, suffixes in EXTENSIONS_BY_MIME.items()
+        if mime in permitted
+        for suffix in suffixes
+    )
 
 
 class UnsafeFileError(ValueError):
@@ -85,18 +116,12 @@ def scan(filename: str, data: bytes, declared_mime: str | None = None) -> ScanRe
 
 def _guess_from_name(filename: str) -> str:
     lowered = filename.lower()
-    if lowered.endswith(".pdf"):
-        return "application/pdf"
-    if lowered.endswith(".docx"):
-        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    if lowered.endswith(".doc"):
-        return "application/msword"
-    if lowered.endswith((".jpg", ".jpeg")):
-        return "image/jpeg"
-    if lowered.endswith(".png"):
-        return "image/png"
-    if lowered.endswith(".md"):
-        return "text/markdown"
-    if lowered.endswith(".txt"):
-        return "text/plain"
+    # Longest suffix first, so ".docx" is never matched as ".doc".
+    for suffix, mime in sorted(
+        ((s, m) for m, suffixes in EXTENSIONS_BY_MIME.items() for s in suffixes),
+        key=lambda pair: len(pair[0]),
+        reverse=True,
+    ):
+        if lowered.endswith(suffix):
+            return mime
     return "application/octet-stream"

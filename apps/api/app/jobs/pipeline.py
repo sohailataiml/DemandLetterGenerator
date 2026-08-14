@@ -16,6 +16,7 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
+from ..audit import service as audit
 from ..domain.enums import Severity
 from ..domain.models import Demand, GenerationJob
 from ..extraction import service as extraction
@@ -176,9 +177,19 @@ def run_extraction_only(
             session, case_id, actor=actor, document_ids=payload.get("document_ids")
         ),
     )
-    return {
+    result = {
         "documents": len(reports),
         "proposed": sum(r.proposed for r in reports),
         "rejected": sum(len(r.rejected) for r in reports),
         "reports": [r.to_dict() for r in reports],
     }
+    audit.record(
+        session,
+        event="EXTRACTION_COMPLETED",
+        actor=actor,
+        case_id=case_id,
+        subject_id=job.id,
+        payload={key: result[key] for key in ("documents", "proposed", "rejected")},
+    )
+    session.flush()
+    return result

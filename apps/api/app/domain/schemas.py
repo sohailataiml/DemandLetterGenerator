@@ -391,6 +391,23 @@ class DocumentDetailOut(DocumentOut):
     pages: list[DocumentPageOut] = Field(default_factory=list)
 
 
+class UploadLimitsOut(BaseModel):
+    """What the server will actually accept.
+
+    The upload UI reads this rather than hardcoding a format list, so it cannot
+    offer the attorney a file type the scanner is going to reject. These are
+    advisory for the client and authoritative on the server: every value here
+    is re-checked during ingestion regardless of what the browser did.
+    """
+
+    max_upload_bytes: int
+    allowed_mime_types: list[str]
+    allowed_extensions: list[str]
+    max_template_bytes: int
+    template_mime_types: list[str]
+    template_extensions: list[str]
+
+
 # --------------------------------------------------------------------------- facts
 
 

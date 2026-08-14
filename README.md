@@ -144,25 +144,31 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how these fit together and
 
 ## Demo script
 
-The end-to-end scenario the system is built for:
+The end-to-end scenario the system is built for. **All of it runs in the
+browser** — no Swagger, no curl, no seeded data required:
 
-1. Upload the firm's real demand letter as a template — `POST /v1/cases/{id}/templates`.
-   The analyzer reports its blocks, sections and dynamic slots.
-2. Upload case materials — police report, records, imaging, bills.
-3. Run extraction (`POST /v1/cases/{id}/extract-async`). Every proposed fact
-   carries a document, a page, and **character offsets** into that page.
-4. Verify or reject each fact in the Facts tab. Nothing else can.
-5. Generate (`POST /v1/cases/{id}/generate` → `202` + a job id; watch
-   `GET /v1/jobs/{id}/events`).
-6. Review the draft. The Demand tab shows readiness counts, the pipeline stage,
+1. Open a case and click **Documents**.
+2. Upload the firm's real demand letter as the template. The analyzer runs
+   inside the request and reports its blocks, sections and dynamic slots.
+3. Upload case materials — police report, records, imaging, bills. Several at
+   once; each row shows its own progress and outcome.
+4. Click **Extract proposed facts**. The stages stream in over SSE. Every
+   proposed fact carries a document, a page, and **character offsets** into
+   that page.
+5. Verify or reject each fact in the Facts tab. Nothing else can.
+6. Generate the demand. The uploaded template is bound to it automatically.
+7. Review the draft. The Demand tab shows readiness counts, the pipeline stage,
    and any blocking issues with a link to the offending section.
-7. Ask for a revision: *"Make the liability section more forceful without
+8. Ask for a revision: *"Make the liability section more forceful without
    changing any facts."* The model proposes; the constraint checker validates;
    you see a diff. **The letter has not changed.**
-8. Accept or reject. Only an attorney can accept.
-9. Approve. The server re-validates, refuses while any BLOCKING issue stands,
-   then locks and hashes the exact approved bytes.
-10. Download the DOCX — the firm's template, filled in.
+9. Accept or reject. Only an attorney can accept.
+10. Approve. The server re-validates, refuses while any BLOCKING issue stands,
+    then locks and hashes the exact approved bytes.
+11. Download the DOCX — the firm's template, filled in.
+
+The same run is available headless as `python scripts/demo_case.py --template
+--extract`, which is what seeds the deployed demo.
 
 ## Validation rules
 
@@ -247,8 +253,10 @@ An honest list of what the spec asks for that is not here:
   review rather than silently accepted. That is the safe direction to be wrong.
 - **Contradiction detection is narrow.** `CLAIM_003` fires when a claim negates
   a phrase the evidence states plainly. It is not general-purpose entailment.
-- **No document upload from the UI.** Documents and templates are ingested
-  through the API; the UI reviews and downloads them.
+- **A removed document is gone.** `DELETE /v1/documents/{id}` deletes the stored
+  bytes rather than tombstoning the row. It is refused whenever any fact cites
+  the document, so nothing with provenance behind it can be removed, and the
+  removal itself is audited — but there is no undo.
 - **PDF requires LibreOffice.** `GET /demands/{id}/pdf` shells out to `soffice`
   and returns 503 with a clear message if it is not installed. DOCX is unaffected.
 - **Scanned PDFs are not OCR'd.** They ingest and store fine, marked `NEEDS_OCR`.
@@ -273,7 +281,9 @@ apps/api/tests/
   adversarial/   prompt injection, tampering, bypass attempts
   fixtures/golden_case/   template.docx, expected-demand.docx, case-materials/
 apps/web/src/
-  components/case/   workspace, readiness, revisions, evidence, ten tabs
+  components/case/          workspace, readiness, revisions, evidence, ten tabs
+  components/case/upload/   dropzone, upload state machine, template card,
+                            materials card, extraction + SSE progress
 alembic/           migrations
 scripts/           demo, fixtures, quality gate
 docs/ADRs/         why each decision was made

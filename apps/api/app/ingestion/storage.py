@@ -28,6 +28,8 @@ class ObjectStore(Protocol):
 
     def exists(self, key: str) -> bool: ...
 
+    def delete(self, key: str) -> None: ...
+
 
 class LocalObjectStore:
     """Filesystem-backed store. Swap for S3 by implementing :class:`ObjectStore`."""
@@ -63,6 +65,16 @@ class LocalObjectStore:
 
     def exists(self, key: str) -> bool:
         return self._path(key).exists()
+
+    def delete(self, key: str) -> None:
+        """Remove a stored object.
+
+        Immutability means a stored original is never *rewritten*; it does not
+        mean it can never be withdrawn. Deleting is reachable from exactly one
+        place — removing a source document no fact cites — and that caller is
+        what enforces the rule, not this method.
+        """
+        self._path(key).unlink(missing_ok=True)
 
 
 def document_key(case_id: str, sha256: str, filename: str) -> str:

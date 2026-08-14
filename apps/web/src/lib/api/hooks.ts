@@ -33,6 +33,7 @@ import type {
   SourceDocument,
   SourceDocumentDetail,
   TimelineEntry,
+  UploadLimits,
   ValidationIssue,
   Vehicle,
 } from "./types";
@@ -57,6 +58,8 @@ export const queryKeys = {
   caseAudit: (id: string) => ["case", id, "audit"] as const,
   demandAudit: (demandId: string) => ["demand", demandId, "audit"] as const,
   templates: (id: string) => ["case", id, "templates"] as const,
+  template: (templateId: string) => ["template", templateId] as const,
+  uploadLimits: ["upload-limits"] as const,
   revisions: (demandId: string) => ["demand", demandId, "revisions"] as const,
   jobs: (id: string) => ["case", id, "jobs"] as const,
   job: (jobId: string) => ["job", jobId] as const,
@@ -171,6 +174,25 @@ export function useFacts(caseId: string, status?: FactStatus) {
     queryKey: queryKeys.facts(caseId, status),
     queryFn: () => apiFetch<Fact[]>(`/v1/cases/${caseId}/facts${query}`),
     enabled: Boolean(caseId),
+  });
+}
+
+/** Size/type limits, straight from the server that enforces them. */
+export function useUploadLimits() {
+  return useQuery<UploadLimits, ApiError>({
+    queryKey: queryKeys.uploadLimits,
+    queryFn: () => apiFetch<UploadLimits>("/v1/upload-limits"),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/** Removal is refused by the server whenever a fact cites the document. */
+export function useDeleteDocument(caseId: string) {
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<void, ApiError, string>({
+    mutationFn: (documentId) =>
+      apiFetch<void>(`/v1/documents/${documentId}`, { method: "DELETE" }),
+    onSuccess: invalidate,
   });
 }
 
@@ -321,6 +343,14 @@ export function useTemplates(caseId: string) {
     queryKey: queryKeys.templates(caseId),
     queryFn: () => apiFetch<LetterTemplate[]>(`/v1/cases/${caseId}/templates`),
     enabled: Boolean(caseId),
+  });
+}
+
+export function useTemplateDetail(templateId: string | null) {
+  return useQuery<LetterTemplateDetail, ApiError>({
+    queryKey: queryKeys.template(templateId ?? "none"),
+    queryFn: () => apiFetch<LetterTemplateDetail>(`/v1/templates/${templateId}`),
+    enabled: Boolean(templateId),
   });
 }
 

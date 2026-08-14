@@ -223,12 +223,61 @@ What is genuinely absent: concurrent editing, presence, and CRDT merge.
 
 ---
 
+## Phase 13 — Uploading from the browser
+
+Everything the pipeline needed was already reachable over HTTP; none of it was
+reachable from the UI, so the assignment's own first sentence — *given a real
+demand letter as a template and relevant legal case materials* — required
+Swagger or curl. This phase wires the existing endpoints to a workflow.
+
+**Backend, two endpoints and one rule:**
+
+- `GET /v1/upload-limits` reports what `ingestion/scanner.py` enforces. The
+  uploader reads it instead of hardcoding a format list, so it cannot offer a
+  type ingestion would reject. Client-side validation saves a doomed round trip
+  and is not trusted: every byte is re-checked server-side.
+- `DELETE /v1/documents/{id}` withdraws a file uploaded in error. It is
+  **refused whenever any fact cites the document** — proposed, verified or
+  rejected alike — because a citation is what stands between a verified fact
+  and an unsourced assertion. Enforced in `ingestion/service.remove_document`,
+  audited as `DOCUMENT_REMOVED` before the row disappears.
+- `EXTRACTION_STARTED` is recorded at request time rather than at completion,
+  so a run that fails or never finishes still leaves a trace of who asked for
+  it; `EXTRACTION_COMPLETED` carries the totals.
+
+**Frontend:**
+
+- `lib/api/client.ts` — `apiUpload` uses XMLHttpRequest because `fetch` reports
+  nothing about request-body progress, and a bar that jumps 0→100 is worse than
+  none on a 40MB record. `streamJobEvents` reads SSE from a fetch body, since
+  `EventSource` cannot carry this API's auth headers. `createEventStreamParser`
+  is separate and separately tested, because a chunk boundary can land mid-frame.
+- `components/case/upload/queue.ts` — the upload state machine. Each state is
+  something that happens: `PROCESSING` is the window between the last byte
+  being delivered and the response arriving, which is exactly when ingestion
+  scans and paginates the file. `UPLOADED` (stored, text unreadable) is a
+  distinct outcome from `READY`, so a scanned PDF is not reported as usable.
+- Template and case materials are **separate cards with separate copy**, not one
+  uploader with a type dropdown. They have opposite trust roles and that is the
+  mistake worth designing against.
+- `upload/extraction.tsx` renders only the stages the pipeline actually emits.
+  A longer checklist ticked off on a timer would be a picture of work rather
+  than a report of it. The polled job row runs alongside the stream, so a
+  dropped stream costs progress detail, not correctness.
+
+**What the UI deliberately does not do:** block generation when no template is
+uploaded. The server permits it (the letter renders in the built-in layout), so
+the Demand tab says exactly that and offers both routes rather than inventing a
+client-side rule the backend would not enforce.
+
+---
+
 ## Test counts
 
 | Suite | Baseline | Now |
 | --- | --- | --- |
-| Backend | 61 | **293** |
-| Frontend | 66 | **91** |
+| Backend | 61 | **304** |
+| Frontend | 66 | **124** |
 
 New backend suites: template analyzer, binder, fidelity, API, golden document,
 provenance, extraction, grounding, revisions, jobs, migrations, plus
@@ -239,7 +288,7 @@ provenance, extraction, grounding, revisions, jobs, migrations, plus
 ```
 Demand Letter Quality Gate
 
-  Unit/integration tests           PASS        (293 tests)
+  Unit/integration tests           PASS        (304 tests)
   Fact lifecycle invariants        PASS        (21 tests)
   Unverified fact escapes          0           (7 tests)
   Arithmetic delegated to LLM      0           (10 tests)
@@ -268,6 +317,13 @@ Collected in one place rather than scattered:
 - **Contradiction detection is narrow**, not entailment.
 - **Jobs are in-process.** See ADR-006.
 - **Auth is a header stand-in.** See SECURITY.md.
-- **`apps/web/src/lib/api/client.test.ts` has pre-existing `tsc` errors**
-  (`error` typed `unknown` in `catch`). Vitest does not typecheck, so they never
-  surfaced. Left alone as out of scope for this work.
+- **A removed document is gone.** `DELETE /v1/documents/{id}` deletes the stored
+  bytes rather than tombstoning the row. Any fact citing it refuses the removal,
+  and the removal is audited — but there is no undo.
+- **Extraction is not retried per document.** Text extraction happens inside the
+  upload request. A document that ingests as `NEEDS_OCR` stays that way; there
+  is no re-extract endpoint, so the UI reports the state rather than offering a
+  retry it cannot perform.
+- **The duplicate check in the uploader matches on filename**, which is a hint
+  only. The authoritative check is the server's content hash, and its 409 is
+  what the row reports if the names differ but the bytes do not.

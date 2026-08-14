@@ -63,6 +63,19 @@ outside the object store, or the network.
 - Signature scanning is an EICAR check plus validation. `_external_scan()` is
   the hook for a real scanner; setting `DLG_CLAMAV_HOST` without implementing it
   fails uploads **closed**, on purpose.
+- The type check reads the file's **magic bytes**, not its name or its declared
+  `Content-Type`. A `.pdf` whose bytes are a zip is rejected rather than
+  repaired.
+- The browser uploader validates against `GET /v1/upload-limits`, which reports
+  what `scanner.py` enforces. That check exists to save a doomed round trip and
+  is not trusted: every byte is re-validated server-side regardless.
+- A template is opened as OOXML and read. No macro, embedded object or script in
+  an uploaded `.docx` is ever executed, and nothing in the template becomes a
+  fact — it supplies structure, the verified fact store supplies content.
+- Removing a document is refused whenever any fact cites it (proposed, verified
+  or rejected alike), so a citation can never be left pointing at bytes that no
+  longer exist. The refusal is enforced in `ingestion/service.remove_document`,
+  not in the UI.
 
 ---
 

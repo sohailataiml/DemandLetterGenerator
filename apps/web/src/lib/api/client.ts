@@ -118,6 +118,176 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   return (await response.json()) as T;
 }
 
+// ------------------------------------------------------------------- uploads
+
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+  /** 0–100, or null while the total length is unknown. */
+  percent: number | null;
+}
+
+export interface UploadOptions {
+  /** Extra multipart form fields sent alongside the file. */
+  fields?: Record<string, string>;
+  onProgress?: (progress: UploadProgress) => void;
+  /** Fires once the last byte is sent — from here the server is working. */
+  onUploaded?: () => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Multipart upload with real progress.
+ *
+ * XMLHttpRequest rather than fetch: fetch reports nothing about request-body
+ * progress, and a progress bar that jumps 0→100 is worse than none on a 40MB
+ * medical record. `onUploaded` marks the moment the bytes are delivered, which
+ * is when the server starts extracting text — so the UI can distinguish
+ * "uploading" from "the server is working" without inventing either.
+ */
+export function apiUpload<T>(path: string, file: File, options: UploadOptions = {}): Promise<T> {
+  const { fields = {}, onProgress, onUploaded, signal } = options;
+
+  return new Promise<T>((resolve, reject) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
+
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE_URL}${path}`);
+    for (const [key, value] of Object.entries(authHeaders())) {
+      request.setRequestHeader(key, value);
+    }
+
+    request.upload.onprogress = (event) => {
+      onProgress?.({
+        loaded: event.loaded,
+        total: event.total,
+        percent: event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : null,
+      });
+    };
+    request.upload.onload = () => onUploaded?.();
+
+    request.onload = () => {
+      let payload: unknown = null;
+      try {
+        payload = request.responseText ? JSON.parse(request.responseText) : null;
+      } catch {
+        payload = request.responseText;
+      }
+      if (request.status >= 200 && request.status < 300) {
+        resolve(payload as T);
+        return;
+      }
+      const detail = (payload as { detail?: unknown })?.detail ?? payload;
+      reject(new ApiError(request.status, messageFromDetail(request.status, detail), detail));
+    };
+    request.onerror = () =>
+      reject(new ApiError(0, `Cannot reach the API at ${API_BASE_URL}. Is the backend running?`, null));
+    request.ontimeout = () => reject(new ApiError(0, "The upload timed out.", null));
+    request.onabort = () => reject(new ApiError(0, "Upload cancelled.", null));
+
+    signal?.addEventListener("abort", () => request.abort(), { once: true });
+    request.send(form);
+  });
+}
+
+// --------------------------------------------------------------- job progress
+
+export interface SseEvent {
+  event: string;
+  data: string;
+}
+
+/**
+ * Incremental parser for the `event:`/`data:` frames the jobs endpoint emits.
+ *
+ * Kept separate from the transport because a network chunk boundary can land
+ * anywhere — including mid-frame — and that is exactly the case worth having a
+ * test for. Feed it whatever arrives; it returns only complete events.
+ */
+export function createEventStreamParser() {
+  let buffer = "";
+
+  return {
+    push(chunk: string): SseEvent[] {
+      buffer += chunk;
+      const events: SseEvent[] = [];
+      let boundary = buffer.indexOf("\n\n");
+
+      while (boundary !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf("\n\n");
+
+        let name = "message";
+        const dataLines: string[] = [];
+        for (const line of frame.split("\n")) {
+          if (line.startsWith(":")) continue; // keep-alive comment
+          if (line.startsWith("event:")) name = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+        }
+        if (dataLines.length > 0) events.push({ event: name, data: dataLines.join("\n") });
+      }
+      return events;
+    },
+  };
+}
+
+export interface JobStreamHandlers {
+  onStage?: (stage: { stage: string; status: string; detail?: string; at: string }) => void;
+  onDone?: (payload: {
+    job_id: string;
+    status: string;
+    result?: Record<string, unknown> | null;
+    error?: string | null;
+  }) => void;
+}
+
+/**
+ * Follow a job's server-sent events to completion.
+ *
+ * `EventSource` cannot carry the auth headers this API requires, so the stream
+ * is read from a normal fetch body. Callers are expected to also hold a polled
+ * query on the job row: if this stream dies, progress detail stops but the
+ * outcome is still observed.
+ */
+export async function streamJobEvents(
+  jobId: string,
+  handlers: JobStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/v1/jobs/${jobId}/events`, {
+    headers: { ...authHeaders(), Accept: "text/event-stream" },
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new ApiError(response.status, messageFromDetail(response.status, null), null);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = createEventStreamParser();
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        continue; // a frame we cannot read is not a reason to kill the stream
+      }
+      if (event.event === "stage") handlers.onStage?.(payload as never);
+      if (event.event === "done") {
+        handlers.onDone?.(payload as never);
+        return;
+      }
+    }
+  }
+}
+
 /** Binary download (DOCX/PDF) that preserves the server-provided filename. */
 export async function apiDownload(
   path: string,

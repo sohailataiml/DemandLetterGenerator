@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from ...audit import service as audit
 from ...db import get_db, session_scope
 from ...domain.models import Case, Demand, GenerationJob
 from ...domain.schemas import GenerationJobOut, JobRequestIn
@@ -117,6 +118,16 @@ def start_extraction(
         case_id=case.id,
         kind=job_runner.EXTRACT,
         requested_by=user.id,
+        payload={"document_ids": payload.document_ids},
+    )
+    # Recorded at request time, not at completion, so a run that fails or never
+    # finishes still leaves a trace of who asked for it.
+    audit.record(
+        db,
+        event="EXTRACTION_STARTED",
+        actor=user,
+        case_id=case.id,
+        subject_id=job.id,
         payload={"document_ids": payload.document_ids},
     )
     db.commit()
