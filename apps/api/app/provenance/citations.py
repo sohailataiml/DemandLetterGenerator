@@ -166,6 +166,27 @@ def resolve(page_text: str, quote: str) -> ResolvedCitation | None:
     )
 
 
+def count_occurrences(page_text: str, quote: str) -> int:
+    """How many times the page says this, verbatim or up to whitespace.
+
+    A count above one is not a failure of matching — the page really does say it
+    twice — but it does mean no single span can be called *the* source without a
+    human choosing. Counting is done on the verbatim text first and falls back
+    to the whitespace-collapsed text, mirroring :func:`resolve` so the two
+    cannot disagree about whether a quote is present.
+    """
+    if not page_text or not quote or not quote.strip():
+        return 0
+    verbatim = page_text.count(quote)
+    if verbatim:
+        return verbatim
+    haystack, _ = _normalized_with_map(page_text)
+    needle = _WHITESPACE.sub(" ", quote).strip()
+    if not needle:
+        return 0
+    return haystack.count(needle)
+
+
 def verify_offsets(page_text: str, start: int, end: int, expected_hash: str) -> bool:
     """Do the recorded offsets still quote the text they were recorded against?"""
     if start < 0 or end > len(page_text) or start >= end:

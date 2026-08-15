@@ -33,9 +33,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .. import ids
 from ..db import Base
+from ..provenance import geometry
 from .enums import (
     BillStatus,
     CaseStatus,
+    CitationStatus,
     ClaimStatus,
     DamageCategory,
     DemandStatus,
@@ -370,6 +372,20 @@ class SourceDocument(Base, TimestampMixin):
 
 
 class DocumentPage(Base):
+    """The canonical text of one page, and optionally its rendered geometry.
+
+    ``text`` is the authority for every offset in the system: citation offsets
+    are Python string indexes (Unicode code points) into *this* string, and they
+    are page-local, never document-global. The page text is written once at
+    ingestion and never rewritten, because moving it would silently move every
+    offset already recorded against it.
+
+    ``words`` holds one record per word — ``{"text", "start", "end", "bbox"}``
+    with the bbox normalized to the page — and is deferred: it is large, and no
+    case-level screen needs it. Only the evidence viewer asks for it, through
+    the dedicated geometry endpoint.
+    """
+
     __tablename__ = "document_pages"
     __table_args__ = (UniqueConstraint("document_id", "page_number", name="uq_document_page"),)
 
@@ -379,8 +395,26 @@ class DocumentPage(Base):
     )
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: Rendered page size in the source's own units (PDF points). NULL for
+    #: formats that have no page geometry at all.
+    width: Mapped[float | None] = mapped_column(Float)
+    height: Mapped[float | None] = mapped_column(Float)
+    #: "native" (PDF text layer), "ocr", "text" (characters but no layout) or
+    #: "none". OCR pages are stored exactly like native ones, which is what
+    #: keeps the provenance API unchanged when an OCR engine is added.
+    extraction_method: Mapped[str] = mapped_column(
+        String(16), default=geometry.TEXT, server_default=geometry.TEXT, nullable=False
+    )
+    word_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    words: Mapped[list[dict] | None] = mapped_column(JSON, deferred=True)
 
     document: Mapped[SourceDocument] = relationship(back_populates="pages")
+
+    @property
+    def has_geometry(self) -> bool:
+        return self.word_count > 0 and bool(self.width) and bool(self.height)
 
 
 class Fact(Base, TimestampMixin):
@@ -421,11 +455,21 @@ class Fact(Base, TimestampMixin):
 class FactSource(Base, TimestampMixin):
     """A citation: where in which document this fact came from.
 
+    The chain it records is document → page → span → region, and each link is
+    optional in exactly one direction: a citation may name a page without a
+    span, and a span without a region, but never a region without a span.
+
     ``start_offset``/``end_offset`` are character offsets into the text of the
     cited page. When they are present the UI highlights the exact span; when
     they are not it falls back to searching for the excerpt and says so. The
     hash of the quoted text is what proves the offsets still point at the same
     words they did when the fact was proposed.
+
+    ``bounding_boxes`` are normalized rectangles on the rendered page — one per
+    visual line, so a passage that wraps highlights as the shape it really is.
+    They are written only for an ``EXACT`` citation on a page with geometry; a
+    fuzzy match never gets a rectangle, because a rectangle is a claim of
+    precision this system would not be able to back up.
     """
 
     __tablename__ = "fact_sources"
@@ -443,8 +487,24 @@ class FactSource(Base, TimestampMixin):
     #: "exact" when the offsets were verified against the stored page text,
     #: "approximate" when only a fuzzy match was possible.
     match_kind: Mapped[str | None] = mapped_column(String(16))
+    #: How precisely this citation is pinned down. See :class:`CitationStatus`.
+    citation_status: Mapped[CitationStatus] = mapped_column(
+        String(16),
+        default=CitationStatus.UNRESOLVED,
+        server_default=CitationStatus.UNRESOLVED.value,
+        nullable=False,
+    )
+    #: Normalized ``[{"x","y","width","height"}, ...]``, one per visual line.
+    bounding_boxes: Mapped[list[dict] | None] = mapped_column(JSON)
+    #: Confidence in the *location*, not in the fact: 1.0 for a verbatim match,
+    #: the similarity ratio for a paraphrase, NULL when nothing was located.
+    confidence: Mapped[float | None] = mapped_column(Float)
 
     fact: Mapped[Fact] = relationship(back_populates="sources")
+
+    @property
+    def has_geometry(self) -> bool:
+        return bool(self.bounding_boxes)
 
 
 class LetterTemplate(Base, TimestampMixin):

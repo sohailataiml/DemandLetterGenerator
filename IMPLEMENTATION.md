@@ -272,23 +272,81 @@ client-side rule the backend would not enforce.
 
 ---
 
+## Phase 14 — Bounding-box provenance
+
+Phase 4 could say *which page* a fact came from and *which characters* on it.
+An attorney checking a demand does not read a transcript of a page; they look at
+the page. This phase carries provenance the rest of the way — to a region on the
+rendered original — without letting it claim more than it knows.
+
+**The distinction the whole phase turns on:** document-level certainty,
+page-level certainty, span-level certainty and box-level certainty are four
+different things. `CitationStatus` (`EXACT` / `AMBIGUOUS` / `TEXT_ONLY` /
+`UNRESOLVED`) keeps them apart in the schema, and the UI branches on it rather
+than inferring from whatever fields happen to be populated.
+
+**Extraction.** `ingestion/pdf_geometry.py` reads native PDFs through PyMuPDF
+and returns words with rectangles. The canonical page text is built *from those
+words* — words joined by single spaces, lines by newlines — so
+`page_text[word.start:word.end] == word.text` is true by construction. Without
+PyMuPDF the pypdf path still runs and pages simply have no geometry. `.txt` and
+`.docx` have characters but no layout, and say so (`extraction_method="text"`).
+
+**Span → boxes.** `provenance/geometry.py` selects the words a span covers,
+groups them by visual line, and unions each group — a three-line finding
+highlights as three rectangles, not one box swallowing the text between them.
+Before returning anything it re-reads the words it picked and compares them with
+the span it was asked to cover; a mismatch returns *no* boxes. That check is
+what makes a wrong highlight a structural impossibility rather than a bug class.
+
+**Ambiguity.** `_exact()` used to take the first match. On a page that says
+"L5-S1 disc extrusion" twice, first-match is a coin flip presented as a fact, so
+`count_occurrences()` now runs first and a repeated quote is stored `AMBIGUOUS`
+with no offsets. `POST /v1/citations/{id}/resolve` lets a reviewer pick — and
+only accepts a selection that is an occurrence of the passage already quoted, so
+provenance can be sharpened but never redirected.
+
+**Verified facts.** Resolving and backfilling touch citation columns only. No
+fact value, summary, status, reviewer or timestamp is read or written, and
+`test_backfill_does_not_touch_the_facts_themselves` asserts the whole tuple is
+unchanged. Enriching provenance is not editing a fact; that is the line, and it
+is enforced in code rather than in a comment.
+
+**Backfill.** `scripts/backfill_provenance.py` never re-extracts a document:
+offsets already recorded point into the stored page text, so moving that text
+would move them. Words recovered from the original file are *aligned onto* it
+instead, and a page whose words do not walk through it in order is left without
+geometry and named in the report. A citation recorded as `approximate` stays
+`TEXT_ONLY` even though its stored excerpt was copied out of the page and would
+"match" trivially if re-resolved — the tempting upgrade there is exactly the
+false precision this phase exists to prevent.
+
+**Frontend.** `source-viewer.tsx` renders the original page with PDF.js in the
+browser (no server-side rasterizing, the PDF is never altered) and overlays the
+stored boxes as CSS percentages, which is why they line up at any zoom. Page
+geometry is fetched lazily, one page at a time, and only when there is something
+to place. PDF.js failing to load degrades to the extracted page text with the
+span marked — a poorer view, never a false one.
+
+---
+
 ## Test counts
 
 | Suite | Baseline | Now |
 | --- | --- | --- |
-| Backend | 61 | **304** |
-| Frontend | 66 | **124** |
+| Backend | 61 | **341** |
+| Frontend | 66 | **149** |
 
 New backend suites: template analyzer, binder, fidelity, API, golden document,
-provenance, extraction, grounding, revisions, jobs, migrations, plus
-`tests/invariants/` and `tests/adversarial/`.
+provenance (spans, geometry, API, backfill), extraction, grounding, revisions,
+jobs, migrations, plus `tests/invariants/` and `tests/adversarial/`.
 
 `make gate` output on the current tree:
 
 ```
 Demand Letter Quality Gate
 
-  Unit/integration tests           PASS        (304 tests)
+  Unit/integration tests           PASS        (341 tests)
   Fact lifecycle invariants        PASS        (21 tests)
   Unverified fact escapes          0           (7 tests)
   Arithmetic delegated to LLM      0           (10 tests)
@@ -299,7 +357,7 @@ Demand Letter Quality Gate
   Template fidelity (golden doc)   PASS        (5 tests)
   Migrations match the models      PASS        (5 tests)
 
-  293 tests executed in 940s
+  341 tests executed in 701s
 
   All gates passed.
 ```
@@ -324,6 +382,15 @@ Collected in one place rather than scattered:
   upload request. A document that ingests as `NEEDS_OCR` stays that way; there
   is no re-extract endpoint, so the UI reports the state rather than offering a
   retry it cannot perform.
+- **Bounding boxes need PyMuPDF, and a text layer.** Without the library, PDFs
+  extract through pypdf and citations stay span-level. Scanned pages have no
+  text layer at all and stay page-level until OCR exists; the page model is
+  already shaped for it (`extraction_method="ocr"`, same word records, same
+  citation model), but no OCR engine is wired up.
+- **Provenance is section-level, not sentence-level.** A section records the
+  facts it used. `section_claims` grades sentences against those facts but does
+  not assert which sentence rests on which fact, and the UI does not pretend it
+  does. The schema is additive if that mapping ever becomes real.
 - **The duplicate check in the uploader matches on filename**, which is a hint
   only. The authoritative check is the server's content hash, and its 409 is
   what the row reports if the names differ but the bytes do not.

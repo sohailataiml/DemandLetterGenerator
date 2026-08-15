@@ -118,6 +118,32 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   return (await response.json()) as T;
 }
 
+/**
+ * Fetch a stored document's bytes.
+ *
+ * Used by the evidence viewer to render the original PDF in the browser. The
+ * bytes stay in memory for the life of the viewer: they are never written to
+ * localStorage, sessionStorage or IndexedDB, because a source document in this
+ * system is somebody's medical record.
+ */
+export async function apiFetchBytes(path: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { headers: authHeaders(), signal });
+  } catch (cause) {
+    throw new ApiError(
+      0,
+      `Cannot reach the API at ${API_BASE_URL}. Is the backend running?`,
+      cause,
+    );
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => null);
+    throw new ApiError(response.status, messageFromDetail(response.status, detail), detail);
+  }
+  return response.arrayBuffer();
+}
+
 // ------------------------------------------------------------------- uploads
 
 export interface UploadProgress {

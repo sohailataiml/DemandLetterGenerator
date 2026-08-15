@@ -5,7 +5,7 @@ WEB := apps/web
 .DEFAULT_GOAL := help
 
 .PHONY: help setup up api web test test-api test-web migrate migration downgrade \
-        demo gate fixtures lint clean
+        demo backfill gate fixtures lint clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -47,9 +47,13 @@ downgrade: ## Roll back one migration
 demo: ## Seed a demo case (needs the API's database, not the API itself)
 	$(PY) scripts/demo_case.py
 
-fixtures: ## Rebuild the golden template and expected document
+backfill: ## Add page geometry and citation precision to existing documents
+	$(PY) scripts/backfill_provenance.py
+
+fixtures: ## Rebuild the golden template, expected document and PDF fixture
 	$(PY) scripts/build_golden_fixture.py
 	$(PY) scripts/build_golden_expected.py
+	$(PY) scripts/build_pdf_fixture.py
 
 clean: ## Remove local databases, storage and caches
 	rm -rf var .pytest_cache

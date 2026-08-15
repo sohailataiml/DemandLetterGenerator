@@ -22,6 +22,7 @@ import {
   SectionHeading,
   Skeleton,
 } from "@/components/ui/primitives";
+import { CitationStatusBadge, SourceViewer, citationStatusOf } from "./source-viewer";
 import type { Fact, FactSource } from "@/lib/api/types";
 
 export type EvidenceSelection =
@@ -152,18 +153,45 @@ function HighlightedText({
   );
 }
 
+/**
+ * What the rail says about a citation's precision.
+ *
+ * Four states, four sentences. Collapsing any two of them would let the rail
+ * imply a level of certainty the citation does not carry — which is the one
+ * thing this panel must never do.
+ */
+function railCitationNote(citation: FactSource): string {
+  switch (citationStatusOf(citation)) {
+    case "EXACT":
+      return citation.bounding_boxes?.length
+        ? "Exact source match — the passage is highlighted on the original page."
+        : "Exact source match in the page text. This source has no page layout, so no region can be highlighted.";
+    case "AMBIGUOUS":
+      return "Multiple matching passages found. Select the supporting passage in the source viewer.";
+    case "TEXT_ONLY":
+      return "Citation available at page level only. Exact highlight unavailable.";
+    default:
+      return "No passage recorded for this citation. The supporting page is shown instead.";
+  }
+}
+
 function DocumentEvidence({
+  caseId,
   documentId,
   page,
   excerpt,
   span,
+  citation,
 }: {
+  caseId: string;
   documentId: string;
   page?: number | null;
   excerpt?: string | null;
   span?: CitationSpan | null;
+  citation?: FactSource | null;
 }) {
   const { data, isLoading, error } = useDocument(documentId);
+  const [viewerPage, setViewerPage] = useState<number | null>(null);
 
   if (isLoading) {
     return (
@@ -194,7 +222,37 @@ function DocumentEvidence({
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <Badge tone="neutral">{humanize(data.document_type)}</Badge>
           <Badge tone="muted">{data.page_count} pages</Badge>
+          {citation ? <CitationStatusBadge citation={citation} /> : null}
         </div>
+        {citation ? (
+          <div className="mt-2">
+            {citation.excerpt ? (
+              <>
+                <p className="eyebrow">Quoted evidence</p>
+                <blockquote
+                  data-testid="quoted-evidence"
+                  className="mt-0.5 border-l-2 border-line-strong pl-2 text-meta italic leading-5 text-ink-body"
+                >
+                  {citation.excerpt}
+                </blockquote>
+              </>
+            ) : null}
+            <p className="mt-1 text-2xs leading-4 text-ink-faint" data-testid="rail-citation-note">
+              {railCitationNote(citation)}
+            </p>
+          </div>
+        ) : null}
+        {/* The one click from a citation to the evidence itself. */}
+        <Button
+          size="sm"
+          variant="secondary"
+          className="mt-2"
+          onClick={() => setViewerPage(page ?? 1)}
+        >
+          {citation && citationStatusOf(citation) === "EXACT" && citation.bounding_boxes?.length
+            ? "Open highlighted source"
+            : "Open original source"}
+        </Button>
       </div>
 
       {data.extraction_note ? (
@@ -237,6 +295,16 @@ function DocumentEvidence({
           </Field>
         </dl>
       </details>
+
+      {viewerPage != null ? (
+        <SourceViewer
+          caseId={caseId}
+          documentId={documentId}
+          pageNumber={viewerPage}
+          citation={citation}
+          onClose={() => setViewerPage(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -311,10 +379,12 @@ function FactEvidence({ caseId, factId }: { caseId: string; factId: string }) {
       {source ? (
         <div className="-mx-4 border-t border-line">
           <DocumentEvidence
+            caseId={caseId}
             documentId={source.document_id}
             page={source.page_number}
             excerpt={source.excerpt}
             span={source}
+            citation={{ ...source, fact_id: source.fact_id ?? fact.id }}
           />
         </div>
       ) : (
@@ -341,6 +411,7 @@ export function EvidencePanel({ caseId }: { caseId: string }) {
           <FactEvidence caseId={caseId} factId={selection.factId} />
         ) : (
           <DocumentEvidence
+            caseId={caseId}
             documentId={selection.documentId}
             page={selection.page}
             excerpt={selection.excerpt}

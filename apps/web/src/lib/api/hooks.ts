@@ -19,9 +19,12 @@ import type {
   Claim,
   Damages,
   Demand,
+  DocumentPage,
   Fact,
+  FactSource,
   FactStatus,
   GenerationJob,
+  PageGeometry,
   LetterTemplate,
   LetterTemplateDetail,
   Party,
@@ -53,6 +56,11 @@ export const queryKeys = {
   facts: (id: string, status?: FactStatus) => ["case", id, "facts", status ?? "all"] as const,
   documents: (id: string) => ["case", id, "documents"] as const,
   document: (documentId: string) => ["document", documentId] as const,
+  documentPage: (documentId: string, page: number) =>
+    ["document", documentId, "page", page] as const,
+  pageGeometry: (documentId: string, page: number) =>
+    ["document", documentId, "page", page, "geometry"] as const,
+  factCitations: (factId: string) => ["fact", factId, "citations"] as const,
   demands: (id: string) => ["case", id, "demands"] as const,
   demand: (demandId: string) => ["demand", demandId] as const,
   caseAudit: (id: string) => ["case", id, "audit"] as const,
@@ -209,6 +217,64 @@ export function useDocument(documentId: string | null) {
     queryKey: queryKeys.document(documentId ?? "none"),
     queryFn: () => apiFetch<SourceDocumentDetail>(`/v1/documents/${documentId}`),
     enabled: Boolean(documentId),
+  });
+}
+
+/**
+ * One page of a document: the canonical text every citation offset indexes.
+ * Cached per page, so paging through evidence does not refetch the document.
+ */
+export function useDocumentPage(documentId: string | null, pageNumber: number | null) {
+  const enabled = Boolean(documentId) && Number.isInteger(pageNumber) && (pageNumber ?? 0) > 0;
+  return useQuery<DocumentPage, ApiError>({
+    queryKey: queryKeys.documentPage(documentId ?? "none", pageNumber ?? 0),
+    queryFn: () => apiFetch<DocumentPage>(`/v1/documents/${documentId}/pages/${pageNumber}`),
+    enabled,
+    staleTime: Infinity,
+  });
+}
+
+/**
+ * Word rectangles for one page — the payload that makes a highlight geometric.
+ *
+ * Deliberately lazy: nothing fetches this until the viewer is open on a page
+ * that says it has geometry, and it is cached indefinitely because an ingested
+ * document is immutable and its geometry cannot change underneath us.
+ */
+export function usePageGeometry(
+  documentId: string | null,
+  pageNumber: number | null,
+  enabled = true,
+) {
+  const ready =
+    enabled && Boolean(documentId) && Number.isInteger(pageNumber) && (pageNumber ?? 0) > 0;
+  return useQuery<PageGeometry, ApiError>({
+    queryKey: queryKeys.pageGeometry(documentId ?? "none", pageNumber ?? 0),
+    queryFn: () =>
+      apiFetch<PageGeometry>(`/v1/documents/${documentId}/pages/${pageNumber}/geometry`),
+    enabled: ready,
+    staleTime: Infinity,
+  });
+}
+
+/** Pin an ambiguous or page-level citation to the passage a reviewer picked. */
+export function useResolveCitation(caseId: string) {
+  const queryClient = useQueryClient();
+  const invalidate = useCaseInvalidation(caseId);
+  return useMutation<
+    FactSource,
+    ApiError,
+    { citationId: string; factId: string; start_offset: number; end_offset: number }
+  >({
+    mutationFn: ({ citationId, start_offset, end_offset }) =>
+      apiFetch<FactSource>(`/v1/citations/${citationId}/resolve`, {
+        method: "POST",
+        body: { start_offset, end_offset },
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.factCitations(variables.factId) });
+      invalidate();
+    },
   });
 }
 

@@ -113,6 +113,76 @@ Demand Letter Quality Gate
    table geometry and every untouched paragraph keep the exact XML they arrived
    with, and a fidelity check proves it before approval.
 
+## Provenance
+
+A citation says four different things, and the system keeps them apart because
+they carry different weight:
+
+```
+document          this immutable file, content-addressed by SHA-256
+  page            this page of it
+    span          these character offsets in the page's canonical text
+      box(es)     this region on the rendered page, one box per visual line
+```
+
+`citation_status` is the honesty label, and the UI branches on it rather than
+inferring anything:
+
+| Status | Means | What the viewer shows |
+| --- | --- | --- |
+| `EXACT` | quoted once, verbatim (up to whitespace) | the passage highlighted on the original page — or, if the source has no layout, the exact span in the page text |
+| `AMBIGUOUS` | the page says it more than once | the occurrences, for the reviewer to choose between |
+| `TEXT_ONLY` | a paraphrase, aligned approximately | the page, and a plain statement that no exact region is known |
+| `UNRESOLVED` | no quote, or one the page does not contain | the page, and nothing more |
+
+Bounding boxes are stored **only** for `EXACT` citations on pages that carry
+word geometry, and they are checked before they are written: the words under the
+span must spell the span, or no box is stored at all.
+
+**Offsets.** Page-local, never document-global. They are Python string indexes
+(Unicode code points) into `document_pages.text` for that page, which is written
+once at ingestion and never rewritten. For native PDFs that text is built from
+the words themselves — words joined by single spaces, lines by newlines — so
+`page_text[word.start:word.end] == word.text` holds by construction.
+
+**Coordinates.** Normalized to the rendered page: `x`, `y`, `width`, `height`
+in `[0, 1]`. The viewer draws them as percentages, so they are correct at any
+zoom and independent of the resolution anything is rendered at.
+
+**Endpoints.**
+
+```
+GET /v1/documents/{id}/pages/{n}            canonical page text and size
+GET /v1/documents/{id}/pages/{n}/geometry   word rectangles for that page only
+GET /v1/documents/{id}/content              the original bytes
+GET /v1/facts/{id}/citations                the citations behind one fact
+POST /v1/citations/{id}/resolve             pin a citation to a chosen passage
+```
+
+Geometry is never included in case or document responses — it is fetched lazily,
+one page at a time, when the evidence viewer opens.
+
+**Backfilling older evidence.** Documents ingested before geometry existed catch
+up without being re-extracted:
+
+```bash
+make migrate                                      # adds the new columns
+python scripts/backfill_provenance.py --dry-run   # report, change nothing
+python scripts/backfill_provenance.py             # write
+```
+
+A local database created before migrations existed (no `alembic_version` table)
+needs one stamp first, so Alembic starts from the schema that is actually there:
+
+```bash
+python -m alembic stamp 0f54265fcc7a && make migrate
+```
+
+It aligns recovered words onto the page text already on file (a page that will
+not align is left without geometry and reported), and it never reads or writes a
+fact: a verified fact means exactly what it meant before, and only the precision
+of the pointer to its source improves.
+
 ## Architecture
 
 ```
@@ -129,7 +199,7 @@ Pattern extractor + stub drafter (default) │ Claude (DLG_LLM_PROVIDER=anthropi
 | --- | --- |
 | `templates/` | analyze a .docx, bind into a clone of it, prove nothing else changed |
 | `extraction/` | case materials → chunks → candidates → **PROPOSED** facts |
-| `provenance/` | resolve a quoted passage to exact character offsets in a page |
+| `provenance/` | resolve a quote to page offsets **and to boxes on the rendered page** |
 | `grounding/` | segment drafted prose into claims, grade each against verified facts |
 | `revisions/` | attorney AI edits as validated patches, applied only on acceptance |
 | `jobs/` | asynchronous pipeline runs with SSE progress |
@@ -153,8 +223,12 @@ browser** — no Swagger, no curl, no seeded data required:
 3. Upload case materials — police report, records, imaging, bills. Several at
    once; each row shows its own progress and outcome.
 4. Click **Extract proposed facts**. The stages stream in over SSE. Every
-   proposed fact carries a document, a page, and **character offsets** into
-   that page.
+   proposed fact carries a document, a page, **character offsets** into that
+   page, and — for native-text PDFs — the **bounding boxes** of the passage on
+   the rendered page.
+   Click any fact, then **Open highlighted source**: the original PDF opens at
+   the exact page with the cited passage highlighted. Where the system cannot be
+   that precise it says so instead (see [Provenance](#provenance)).
 5. Verify or reject each fact in the Facts tab. Nothing else can.
 6. Generate the demand. The uploaded template is bound to it automatically.
 7. Review the draft. The Demand tab shows readiness counts, the pipeline stage,
@@ -260,6 +334,16 @@ An honest list of what the spec asks for that is not here:
 - **PDF requires LibreOffice.** `GET /demands/{id}/pdf` shells out to `soffice`
   and returns 503 with a clear message if it is not installed. DOCX is unaffected.
 - **Scanned PDFs are not OCR'd.** They ingest and store fine, marked `NEEDS_OCR`.
+  Their citations stay page-level: no text layer means no span and no box. The
+  page model already carries `extraction_method`, so an OCR engine plugs in by
+  emitting the same word records with `extraction_method="ocr"` — no change to
+  the citation model or the provenance API.
+- **Provenance is section-level, not sentence-level.** A generated section
+  records the facts it used; `section_claims` grades individual sentences
+  against those facts but does not assert which sentence rests on which fact.
+- **Word geometry needs PyMuPDF.** Without it PDFs still extract text through
+  pypdf and citations resolve to exact spans, but no bounding boxes are stored
+  and the viewer says so rather than drawing one.
 - **Malware scanning is a signature check** (EICAR) plus type/size validation.
   `_external_scan()` in `app/ingestion/scanner.py` is the hook for a real scanner.
 - **Encryption at rest, tenant isolation and signed URLs** are deployment
@@ -271,7 +355,7 @@ An honest list of what the spec asks for that is not here:
 apps/api/app/
   templates/     analyzer, manifest, slots, binder, fidelity
   extraction/    chunker, prompts, providers, service
-  provenance/    citation span resolution
+  provenance/    citation span resolution, page geometry, backfill
   grounding/     claim segmentation and grading
   revisions/     constraints, providers, proposal lifecycle
   jobs/          store, pipeline, runner
@@ -281,10 +365,11 @@ apps/api/tests/
   adversarial/   prompt injection, tampering, bypass attempts
   fixtures/golden_case/   template.docx, expected-demand.docx, case-materials/
 apps/web/src/
-  components/case/          workspace, readiness, revisions, evidence, ten tabs
+  components/case/          workspace, readiness, revisions, evidence rail,
+                            source viewer (original page + highlights), ten tabs
   components/case/upload/   dropzone, upload state machine, template card,
                             materials card, extraction + SSE progress
 alembic/           migrations
-scripts/           demo, fixtures, quality gate
+scripts/           demo, fixtures, provenance backfill, quality gate
 docs/ADRs/         why each decision was made
 ```

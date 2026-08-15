@@ -7,6 +7,8 @@
 
 import type {
   Bill,
+  DocumentPage,
+  PageGeometry,
   CaseRecord,
   CaseSummary,
   Damages,
@@ -189,13 +191,21 @@ export const facts: Fact[] = [
     sources: [
       {
         id: "fsrc_1",
+        fact_id: "fact_verified",
         document_id: "doc_1",
         page_number: 2,
         excerpt: "disc extrusion at L5-S1",
-        start_offset: 42,
-        end_offset: 65,
+        start_offset: 12,
+        end_offset: 35,
         quoted_text_sha256: "a".repeat(64),
         match_kind: "exact",
+        citation_status: "EXACT",
+        // Two lines of the original page, so multi-box rendering is exercised.
+        bounding_boxes: [
+          { x: 0.18, y: 0.51, width: 0.61, height: 0.03 },
+          { x: 0.12, y: 0.55, width: 0.24, height: 0.03 },
+        ],
+        confidence: 1,
       },
     ],
   },
@@ -227,6 +237,7 @@ export const facts: Fact[] = [
     sources: [
       {
         id: "fsrc_2",
+        fact_id: "fact_proposed",
         document_id: "doc_1",
         page_number: 1,
         excerpt: null,
@@ -234,6 +245,9 @@ export const facts: Fact[] = [
         end_offset: null,
         quoted_text_sha256: null,
         match_kind: null,
+        citation_status: "UNRESOLVED",
+        bounding_boxes: null,
+        confidence: null,
       },
     ],
   },
@@ -327,6 +341,47 @@ export const documentDetail: SourceDocumentDetail = {
   pages: [
     { page_number: 1, text: "Patient presented with lumbar pain." },
     { page_number: 2, text: "Impression: disc extrusion at L5-S1 measuring 9 x 10 x 5 mm." },
+  ],
+};
+
+/** Page-level responses: what the evidence viewer fetches, page by page. */
+export const documentPages: Record<number, DocumentPage> = {
+  1: {
+    page_number: 1,
+    text: "Patient presented with lumbar pain.",
+    width: 612,
+    height: 792,
+    extraction_method: "native",
+    word_count: 5,
+    has_geometry: true,
+  },
+  2: {
+    page_number: 2,
+    text: "Impression: disc extrusion at L5-S1 measuring 9 x 10 x 5 mm.",
+    width: 612,
+    height: 792,
+    extraction_method: "native",
+    word_count: 11,
+    has_geometry: true,
+  },
+};
+
+export const pageGeometry: PageGeometry = {
+  document_id: "doc_1",
+  page_number: 2,
+  width: 612,
+  height: 792,
+  extraction_method: "native",
+  words: [
+    { text: "disc", start: 12, end: 16, bbox: { x: 0.18, y: 0.51, width: 0.05, height: 0.02 } },
+    {
+      text: "extrusion",
+      start: 17,
+      end: 26,
+      bbox: { x: 0.24, y: 0.51, width: 0.09, height: 0.02 },
+    },
+    { text: "at", start: 27, end: 29, bbox: { x: 0.34, y: 0.51, width: 0.03, height: 0.02 } },
+    { text: "L5-S1", start: 30, end: 35, bbox: { x: 0.38, y: 0.51, width: 0.07, height: 0.02 } },
   ],
 };
 
@@ -437,4 +492,7 @@ export const workspaceRoutes = {
   "/v1/templates/tmpl_1": { body: letterTemplateDetail },
   "/v1/upload-limits": { body: uploadLimits },
   "/v1/documents/doc_1": { body: documentDetail },
+  "/v1/documents/doc_1/pages/1": { body: documentPages[1] },
+  "/v1/documents/doc_1/pages/2": { body: documentPages[2] },
+  "/v1/documents/doc_1/pages/2/geometry": { body: pageGeometry },
 };

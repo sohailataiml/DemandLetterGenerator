@@ -7,13 +7,15 @@ from sqlalchemy.orm import Session
 
 from ...db import get_db
 from ...domain.enums import FactStatus
-from ...domain.models import Case, Fact
+from ...domain.models import Case, Fact, FactSource
 from ...domain.schemas import (
+    CitationSelectionIn,
     ExtractionReportOut,
     ExtractionRunIn,
     FactCreate,
     FactOut,
     FactRejection,
+    FactSourceOut,
     FactSupersede,
 )
 from ...extraction import service as extraction
@@ -54,6 +56,54 @@ def list_facts(
     user: CurrentUser = Depends(can_read),
 ) -> list[Fact]:
     return facts.list_facts(db, case.id, status_filter)
+
+
+@router.get("/facts/{fact_id}/citations", response_model=list[FactSourceOut])
+def list_fact_citations(
+    fact: Fact = Depends(get_fact),
+    user: CurrentUser = Depends(can_read),
+) -> list[FactSource]:
+    """The citations behind one fact.
+
+    The same records are embedded in the fact itself; this endpoint exists so
+    the evidence viewer can refresh a single fact's provenance — after a
+    reviewer resolves an ambiguous citation, say — without refetching the whole
+    case fact list.
+    """
+    return list(fact.sources)
+
+
+@router.post("/citations/{citation_id}/resolve", response_model=FactSourceOut)
+def resolve_citation(
+    payload: CitationSelectionIn,
+    citation_id: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(can_verify_facts),
+) -> FactSource:
+    """Pin a citation to the passage the reviewer selected on the page.
+
+    This is provenance enrichment, not a change of evidence: the selection must
+    be an occurrence of the passage the citation already quotes, and the fact's
+    own content — its value, its summary, its status — is not touched. That is
+    what makes it safe to run against a VERIFIED fact, whose meaning is
+    immutable and stays immutable here.
+    """
+    citation = db.get(FactSource, citation_id)
+    if citation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"citation {citation_id} not found"
+        )
+    try:
+        updated = facts.apply_citation_selection(
+            db,
+            citation=citation,
+            start=payload.start_offset,
+            end=payload.end_offset,
+            actor=user,
+        )
+    except facts.FactStateError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return updated
 
 
 @router.post("/facts/{fact_id}/verify", response_model=FactOut)

@@ -15,3 +15,6 @@ out/
 next-env.d.ts
 .env.local
 *.tsbuildinfo
+
+# Copied from node_modules at build time by scripts/copy-pdf-worker.mjs
+apps/web/public/pdf.worker.min.mjs

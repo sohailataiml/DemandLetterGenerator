@@ -17,9 +17,10 @@ from sqlalchemy.orm import Session
 
 from ..audit import service as audit
 from ..domain.enums import FactStatus, FactType
-from ..domain.models import Fact, FactSource, SourceDocument
+from ..domain.models import DocumentPage, Fact, FactSource, SourceDocument
 from ..domain.schemas import FactSourceIn
-from ..provenance import citations
+from ..provenance import geometry
+from ..provenance import service as provenance
 from ..security.auth import CurrentUser
 
 
@@ -31,24 +32,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _page_text(document: SourceDocument, page_number: int | None) -> str:
+def _page(document: SourceDocument, page_number: int | None) -> DocumentPage | None:
     if page_number is None:
-        return ""
-    page = next((p for p in document.pages if p.page_number == page_number), None)
-    return page.text if page else ""
+        return None
+    return next((p for p in document.pages if p.page_number == page_number), None)
 
 
 def _attach_sources(
     session: Session, fact: Fact, sources: list[FactSourceIn], case_id: str
 ) -> None:
-    """Attach citations, resolving each excerpt to a span where possible.
+    """Attach citations, resolving each excerpt as precisely as it deserves.
 
     A hand-entered citation gets the same treatment as an extracted one: the
     excerpt is looked up in the stored page text so the reviewer's highlight is
-    a real offset rather than a search the UI has to redo. An excerpt that
-    cannot be located is still stored — a paralegal paraphrasing a record is
-    legitimate — but it is recorded without offsets so the UI can say the
-    highlight is approximate instead of implying precision it does not have.
+    a real offset rather than a search the UI has to redo, and — where the page
+    carries word geometry — the exact region on the rendered page is recorded
+    with it. An excerpt that cannot be located is still stored, because a
+    paralegal paraphrasing a record is legitimate, but it is recorded as
+    ``TEXT_ONLY``/``UNRESOLVED`` so the UI says what it is instead of implying
+    precision the system does not have.
     """
     for source in sources:
         document = session.get(SourceDocument, source.document_id)
@@ -60,22 +62,86 @@ def _attach_sources(
                 f"(1..{document.page_count})"
             )
 
-        resolved = None
-        if source.excerpt:
-            resolved = citations.resolve(_page_text(document, source.page_number), source.excerpt)
+        page = _page(document, source.page_number)
+        fields = provenance.build_citation(
+            page_text=page.text if page else "",
+            quote=source.excerpt,
+            words=geometry.words_from_json(page.words) if page else (),
+        )
 
         session.add(
             FactSource(
                 fact_id=fact.id,
                 document_id=source.document_id,
                 page_number=source.page_number,
-                excerpt=source.excerpt,
-                start_offset=resolved.start_offset if resolved else None,
-                end_offset=resolved.end_offset if resolved else None,
-                quoted_text_sha256=resolved.quoted_text_sha256 if resolved else None,
-                match_kind=resolved.match_kind.value if resolved else None,
+                **fields.as_kwargs(),
             )
         )
+
+
+def apply_citation_selection(
+    session: Session,
+    *,
+    citation: FactSource,
+    start: int,
+    end: int,
+    actor: CurrentUser,
+) -> FactSource:
+    """Record which passage on the page a reviewer says supports the fact.
+
+    Only the provenance columns of the citation move — offsets, quoted text,
+    boxes, status. The fact itself is deliberately untouched, including when it
+    is VERIFIED: what an attorney approved was a claim supported by a page of a
+    document, and sharpening *where on that page* neither changes the claim nor
+    re-opens the approval. Enriching provenance is not editing a fact, and the
+    audit trail records it as its own attributed act.
+    """
+    if citation.page_number is None:
+        raise FactStateError("a citation without a page number cannot be pinned to a span")
+
+    document = session.get(SourceDocument, citation.document_id)
+    if document is None:
+        raise FactStateError(f"source document {citation.document_id!r} no longer exists")
+    page = _page(document, citation.page_number)
+    if page is None:
+        raise FactStateError(
+            f"document {document.id} has no page {citation.page_number} to select from"
+        )
+
+    try:
+        fields = provenance.citation_from_selection(
+            page_text=page.text,
+            start=start,
+            end=end,
+            claimed_quote=citation.excerpt,
+            words=geometry.words_from_json(page.words),
+        )
+    except provenance.SelectionError as exc:
+        raise FactStateError(str(exc)) from exc
+
+    previous_status = citation.citation_status
+    for column, value in fields.as_kwargs().items():
+        setattr(citation, column, value)
+
+    audit.record(
+        session,
+        event="CITATION_RESOLVED",
+        actor=actor,
+        case_id=document.case_id,
+        subject_id=citation.id,
+        payload={
+            "fact_id": citation.fact_id,
+            "document_id": citation.document_id,
+            "page_number": citation.page_number,
+            "from_status": str(previous_status),
+            "to_status": str(fields.citation_status),
+            "start_offset": start,
+            "end_offset": end,
+            "bounding_boxes": len(fields.bounding_boxes or []),
+        },
+    )
+    session.flush()
+    return citation
 
 
 def propose_fact(

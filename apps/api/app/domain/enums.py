@@ -55,6 +55,30 @@ class DocumentStatus(StrEnum):
     NEEDS_OCR = "needs_ocr"
 
 
+class CitationStatus(StrEnum):
+    """How precisely a citation is pinned to the source document.
+
+    Document-level certainty, page-level certainty, span-level certainty and
+    box-level certainty are four different things, and collapsing them is how a
+    system starts implying precision it does not have.
+
+    ``EXACT``       the quoted passage was found verbatim (up to whitespace) and
+                    exactly once on the page: the offsets are real. Bounding
+                    boxes are present too whenever the page carries geometry.
+    ``AMBIGUOUS``   the passage occurs more than once on the page. Nothing here
+                    is wrong, but which occurrence is meant is a human decision.
+    ``TEXT_ONLY``   the quote is a paraphrase or partial match: it locates a
+                    page, not a passage, and never a rectangle.
+    ``UNRESOLVED``  no quote, or a quote the page does not contain. The citation
+                    still names a document and page, and says nothing more.
+    """
+
+    EXACT = "EXACT"
+    AMBIGUOUS = "AMBIGUOUS"
+    TEXT_ONLY = "TEXT_ONLY"
+    UNRESOLVED = "UNRESOLVED"
+
+
 class FactStatus(StrEnum):
     PROPOSED = "PROPOSED"
     VERIFIED = "VERIFIED"

@@ -18,9 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import service as audit
-from ..domain.enums import FactStatus, FactType
+from ..domain.enums import CitationStatus, FactStatus, FactType
 from ..domain.models import DocumentPage, Fact, FactSource, SourceDocument
-from ..provenance import citations
+from ..provenance import geometry
+from ..provenance import service as provenance
 from ..security.auth import CurrentUser
 from . import chunker
 from .prompts import PROMPT_VERSION, ExtractionRequest
@@ -78,29 +79,41 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _page_text(session: Session, document_id: str, page_number: int) -> str:
-    page = session.scalar(
+def _page(session: Session, document_id: str, page_number: int) -> DocumentPage | None:
+    return session.scalar(
         select(DocumentPage).where(
             DocumentPage.document_id == document_id,
             DocumentPage.page_number == page_number,
         )
     )
-    return page.text if page else ""
 
 
 def _resolve_citation(
     session: Session, request: ExtractionRequest, candidate: Candidate
-) -> citations.ResolvedCitation | None:
+) -> provenance.CitationFields | None:
     """Locate the candidate's quote in the stored page, not in the chunk we sent.
 
     Resolving against the page is deliberate: the offsets recorded on the fact
     have to be openable by a reviewer looking at the page, and a chunk boundary
-    is an implementation detail they never see.
+    is an implementation detail they never see. Where the page has word
+    geometry, the same call also fixes the region on the rendered page, so an
+    extracted fact arrives with the full document → page → span → box chain.
+
+    ``None`` means the page does not contain the quote at all — no evidence, so
+    no fact. An ambiguous quote is *not* nothing: it is returned as a citation
+    with ``AMBIGUOUS`` status, and the reviewer chooses the passage.
     """
-    page_text = _page_text(session, request.document_id, request.page_number)
-    if not page_text:
+    page = _page(session, request.document_id, request.page_number)
+    if page is None or not page.text:
         return None
-    return citations.resolve(page_text, candidate.quote)
+    fields = provenance.build_citation(
+        page_text=page.text,
+        quote=candidate.quote,
+        words=geometry.words_from_json(page.words),
+    )
+    if fields.citation_status == CitationStatus.UNRESOLVED:
+        return None
+    return fields
 
 
 def extract_document(
@@ -190,8 +203,9 @@ def _propose_candidate(
             "document_id": document.id,
             "page_number": request.page_number,
             "chunk_index": request.chunk_index,
-            "match_kind": resolved.match_kind.value,
-            "similarity": resolved.similarity,
+            "match_kind": resolved.match_kind,
+            "citation_status": resolved.citation_status.value,
+            "similarity": resolved.confidence,
             "low_confidence": candidate.confidence < LOW_CONFIDENCE,
             "extracted_at": _now().isoformat(),
         },
@@ -204,11 +218,7 @@ def _propose_candidate(
             fact_id=fact.id,
             document_id=document.id,
             page_number=request.page_number,
-            excerpt=resolved.quoted_text,
-            start_offset=resolved.start_offset,
-            end_offset=resolved.end_offset,
-            quoted_text_sha256=resolved.quoted_text_sha256,
-            match_kind=resolved.match_kind.value,
+            **resolved.as_kwargs(),
         )
     )
     audit.record(
@@ -229,7 +239,9 @@ def _propose_candidate(
                 "page": request.page_number,
                 "start_offset": resolved.start_offset,
                 "end_offset": resolved.end_offset,
-                "match_kind": resolved.match_kind.value,
+                "match_kind": resolved.match_kind,
+                "citation_status": resolved.citation_status.value,
+                "bounding_boxes": len(resolved.bounding_boxes or []),
             },
         },
     )

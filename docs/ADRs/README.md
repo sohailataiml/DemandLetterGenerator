@@ -13,6 +13,7 @@ would otherwise assume was arbitrary.
 | [006](ADR-006-expensive-workflows-run-asynchronously.md) | Expensive workflows run asynchronously |
 | [007](ADR-007-uploaded-content-is-untrusted.md) | Uploaded content is untrusted data |
 | [008](ADR-008-claim-grounding-is-deterministic.md) | Claim grounding is deterministic, not model-judged |
+| [009](ADR-009-a-citation-never-claims-more-precision-than-it-has.md) | A citation never claims more precision than it has |
 
 Format: context, decision, consequences, and — where it matters — what was
 rejected and why.

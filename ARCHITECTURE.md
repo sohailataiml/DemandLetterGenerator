@@ -145,6 +145,52 @@ quoted text, so a highlight is a lookup rather than a search, and
 `verify_offsets()` can re-prove later that the offsets still quote what they
 did.
 
+### From span to region
+
+`provenance/service.py` grades every citation the same way regardless of who
+made it — paralegal, extractor or backfill — and the grade is what the UI
+branches on:
+
+```
+fact → citation → document → page → span → box(es) → highlighted original page
+
+EXACT       quoted once, verbatim (up to whitespace)  → offsets, and boxes if
+                                                        the page has geometry
+AMBIGUOUS   the page says it more than once           → no span; reviewer chooses
+TEXT_ONLY   a paraphrase                              → offsets to scroll to,
+                                                        never a rectangle
+UNRESOLVED  no quote, or not on the page              → page-level only
+```
+
+`ingestion/pdf_geometry.py` (PyMuPDF) reads a native PDF's word rectangles and
+builds the canonical page text *from those words*, so
+`page_text[word.start:word.end] == word.text` holds by construction rather than
+by coincidence. `provenance/geometry.py` turns a span into one box per visual
+line — and refuses to, unless the words it selected spell the span it was given.
+Coordinates are normalized to `[0, 1]`, which is why the viewer can draw them as
+CSS percentages over a page rendered at any zoom.
+
+Two properties are worth stating plainly, because both are things the system
+declines to do:
+
+- **No fuzzy geometry.** A paraphrase never produces a rectangle, however close
+  the match. Approximate text alignment is a navigation aid; a rectangle over
+  the original document is a claim about the record.
+- **No silent disambiguation.** A quote occurring twice on a page is recorded as
+  `AMBIGUOUS` and stays that way until a human picks one, through
+  `POST /v1/citations/{id}/resolve` — which will only accept a selection that is
+  an occurrence of the passage already quoted. Sharpening provenance is not
+  editing evidence; re-pointing it would be, and that is what supersession is
+  for.
+
+Page geometry lives on `document_pages` as a deferred JSON column and is served
+only by `GET /v1/documents/{id}/pages/{n}/geometry`, one page per request. It
+never appears in a case or document response.
+
+`extraction_method` (`native` | `ocr` | `text` | `none`) is stored per page, so
+an OCR engine becomes another producer of the same word records rather than a
+second provenance model.
+
 ---
 
 ## Claim grounding

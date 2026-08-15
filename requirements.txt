@@ -10,7 +10,11 @@ lxml>=5.0           # OOXML manipulation and canonicalization (via python-docx)
 alembic>=1.13       # schema migrations — `make migrate`
 
 # Optional, feature-gated
-pypdf>=5.0          # PDF text extraction; without it PDFs are stored as NEEDS_OCR
+pymupdf>=1.24       # native PDF text *with word geometry*: the bounding boxes a
+                    # citation highlights. Without it PDFs still extract text
+                    # via pypdf, and citations stay span-level with no boxes.
+pypdf>=5.0          # PDF text extraction fallback; without either, PDFs are
+                    # stored as NEEDS_OCR
 anthropic>=0.40     # only needed when DLG_LLM_PROVIDER=anthropic or
                     # DLG_EXTRACTION_PROVIDER=anthropic
 

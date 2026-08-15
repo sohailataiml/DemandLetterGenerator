@@ -11,6 +11,7 @@ import {
   Skeleton,
 } from "@/components/ui/primitives";
 import { useEvidence } from "./evidence";
+import { CitationStatusBadge } from "./source-viewer";
 import { IssueCard } from "./validation-list";
 import type { Demand } from "@/lib/api/types";
 
@@ -95,9 +96,12 @@ export function SectionContextRail({
             <ul className="mt-1.5 space-y-2">
               {usedFacts.map((fact) => (
                 <li key={fact.id} className="rounded border border-line p-2">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <FactStatusBadge status={fact.status} />
                     <Badge tone="muted">{humanize(fact.fact_type)}</Badge>
+                    {/* How precise the evidence behind this fact actually is,
+                        visible before the reviewer commits to a click. */}
+                    {fact.sources[0] ? <CitationStatusBadge citation={fact.sources[0]} /> : null}
                   </div>
                   <p className="mt-1 text-meta leading-5 text-ink-body">{fact.summary}</p>
                   <Button

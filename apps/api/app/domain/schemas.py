@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .enums import (
     BillStatus,
     CaseStatus,
+    CitationStatus,
     DamageCategory,
     DemandStatus,
     DocumentStatus,
@@ -383,8 +384,47 @@ class DocumentOut(ApiModel):
 
 
 class DocumentPageOut(ApiModel):
+    """A page as the evidence viewer needs it — without the word array.
+
+    ``has_geometry`` says whether asking for ``/geometry`` is worth a round
+    trip; the words themselves are large and are never included in a case-level
+    or document-level response.
+    """
+
     page_number: int
     text: str
+    width: float | None = None
+    height: float | None = None
+    extraction_method: str = "text"
+    word_count: int = 0
+    has_geometry: bool = False
+
+
+class BoundingBoxOut(BaseModel):
+    """A rectangle on the rendered page, normalized to ``[0, 1]``."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class WordGeometryOut(BaseModel):
+    text: str
+    start: int
+    end: int
+    bbox: BoundingBoxOut
+
+
+class PageGeometryOut(BaseModel):
+    """Word rectangles for exactly one page. Fetched lazily, never in bulk."""
+
+    document_id: str
+    page_number: int
+    width: float | None
+    height: float | None
+    extraction_method: str
+    words: list[WordGeometryOut] = Field(default_factory=list)
 
 
 class DocumentDetailOut(DocumentOut):
@@ -463,7 +503,15 @@ class FactRejection(BaseModel):
 
 
 class FactSourceOut(ApiModel):
+    """A citation: document → page → span → region, with its own honesty label.
+
+    ``citation_status`` is what the UI branches on. Only ``EXACT`` may be drawn
+    as an authoritative highlight, and only when ``bounding_boxes`` is non-empty
+    may that highlight be geometric.
+    """
+
     id: str
+    fact_id: str
     document_id: str
     page_number: int | None
     excerpt: str | None
@@ -473,6 +521,23 @@ class FactSourceOut(ApiModel):
     #: "exact"/"normalized" mean the offsets are authoritative; "approximate"
     #: means the UI must present the highlight as a best guess.
     match_kind: str | None = None
+    citation_status: CitationStatus = CitationStatus.UNRESOLVED
+    bounding_boxes: list[BoundingBoxOut] | None = None
+    confidence: float | None = None
+    created_at: datetime | None = None
+
+
+class CitationSelectionIn(BaseModel):
+    """A reviewer pointing at the passage they mean, by page-local offsets.
+
+    Used to settle an ``AMBIGUOUS`` citation, or to pin a page-level citation to
+    a span. The offsets are checked against the stored page text, and against
+    the passage the citation already claims, so this can sharpen provenance but
+    never redirect it at different words.
+    """
+
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
 
 
 class FactOut(ApiModel):

@@ -232,6 +232,42 @@ export interface SourceDocument {
 export interface DocumentPage {
   page_number: number;
   text: string;
+  /** Rendered page size in the source's own units. Null when it has none. */
+  width?: number | null;
+  height?: number | null;
+  /** "native" (PDF text layer), "ocr", "text" (no layout) or "none". */
+  extraction_method?: string;
+  word_count?: number;
+  /** Whether asking for `/geometry` on this page is worth a round trip. */
+  has_geometry?: boolean;
+}
+
+/** A rectangle on the rendered page, as a fraction of its width and height. */
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PageWord {
+  text: string;
+  start: number;
+  end: number;
+  bbox: BoundingBox;
+}
+
+/**
+ * Word rectangles for one page. Large, so it is fetched only when the evidence
+ * viewer opens and only for the page being shown.
+ */
+export interface PageGeometry {
+  document_id: string;
+  page_number: number;
+  width: number | null;
+  height: number | null;
+  extraction_method: string;
+  words: PageWord[];
 }
 
 /**
@@ -252,12 +288,23 @@ export interface SourceDocumentDetail extends SourceDocument {
 }
 
 /**
- * A citation. When `match_kind` is "exact" or "normalized" the offsets index
- * the page text and the highlight is authoritative; "approximate" means the
- * span is a best guess and the UI must say so rather than imply precision.
+ * How precisely a citation is pinned to its source. The UI must branch on this
+ * rather than infer: only EXACT may be drawn as an authoritative highlight, and
+ * only an EXACT citation carrying boxes may be drawn geometrically.
+ */
+export type CitationStatus = "EXACT" | "AMBIGUOUS" | "TEXT_ONLY" | "UNRESOLVED";
+
+/**
+ * A citation: document → page → span → region. When `match_kind` is "exact" or
+ * "normalized" the offsets index the page text and the highlight is
+ * authoritative; "approximate" means the span is a best guess and the UI must
+ * say so rather than imply precision. `bounding_boxes` — one per visual line —
+ * is present only when the passage was located exactly on a page that has
+ * geometry.
  */
 export interface FactSource {
   id: string;
+  fact_id?: string;
   document_id: string;
   page_number: number | null;
   excerpt: string | null;
@@ -265,6 +312,10 @@ export interface FactSource {
   end_offset: number | null;
   quoted_text_sha256: string | null;
   match_kind: "exact" | "normalized" | "approximate" | null;
+  citation_status?: CitationStatus;
+  bounding_boxes?: BoundingBox[] | null;
+  confidence?: number | null;
+  created_at?: string | null;
 }
 
 export interface ExtractionMetadata {

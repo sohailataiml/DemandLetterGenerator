@@ -90,8 +90,11 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: npm start
     envVars:
+      # 22.x because pdfjs-dist (the evidence viewer's PDF renderer) declares
+      # node >= 22.13; on 20.x npm only warns, and the failure would surface at
+      # runtime instead of at build time.
       - key: NODE_VERSION
-        value: "20.18.0"
+        value: "22.13.1"
 
       # Set to the demand-api URL after the first deploy.
       - key: NEXT_PUBLIC_API_BASE_URL

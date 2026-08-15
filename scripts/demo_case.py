@@ -53,6 +53,16 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 TEMPLATE_PATH = REPO_ROOT / "apps" / "api" / "tests" / "fixtures" / "golden_case" / "template.docx"
 MATERIALS_DIR = REPO_ROOT / "apps" / "api" / "tests" / "fixtures" / "golden_case" / "case-materials"
 
+#: A native-text PDF of the radiology report, and the passage on it that the
+#: imaging fact quotes. Rebuild with ``python scripts/build_pdf_fixture.py``.
+MRI_PDF_PATH = REPO_ROOT / "apps" / "api" / "tests" / "fixtures" / "provenance" / "mri-report.pdf"
+MRI_FINDING_PAGE = 3
+MRI_FINDING_QUOTE = (
+    "Broad-based disc extrusion measuring 9 x 10 x 5 mm,\n"
+    "extending into the right lateral recess with contact upon the\n"
+    "traversing right S1 nerve root."
+)
+
 
 def upload_materials(client, case_id: str) -> list[dict]:
     """Upload the golden-case materials so extraction has something to read."""
@@ -223,23 +233,47 @@ def main() -> int:
         )
         document_id = upload.json()["id"]
 
-        for fact_type, summary in (
+        # The radiology report goes in as a real PDF so the imaging fact below
+        # cites a page an attorney can open and see highlighted, rather than a
+        # transcript of one.
+        mri = client.post(
+            f"/v1/cases/{case_id}/documents",
+            files={"file": ("mri-report.pdf", MRI_PDF_PATH.read_bytes(), "application/pdf")},
+            data={"document_type": "MRI_REPORT", "provider_name": "MAX MRI Radiology"},
+            headers=ATTORNEY,
+        )
+        assert mri.status_code == 201, mri.text
+        mri_document_id = mri.json()["id"]
+
+        for fact_type, summary, citation in (
             (
                 "liability",
                 "Andre Whitfield struck the rear of the vehicle occupied by Patrick Donahue while it was stopped at a red light",
+                {"document_id": document_id, "page_number": 1},
             ),
             (
                 "treatment_event",
                 "Patrick Donahue treated with Vermont Spine and Injury and later with Harbor Pain Management",
+                {"document_id": document_id, "page_number": 1},
             ),
-            ("diagnosis", "Treating providers diagnosed lumbar disc displacement"),
+            (
+                "diagnosis",
+                "Treating providers diagnosed lumbar disc displacement",
+                {"document_id": document_id, "page_number": 1},
+            ),
             (
                 "imaging_finding",
                 "MRI at MAX MRI Radiology showed a disc extrusion at L5-S1 measuring 9 x 10 x 5 mm",
+                {
+                    "document_id": mri_document_id,
+                    "page_number": MRI_FINDING_PAGE,
+                    "excerpt": MRI_FINDING_QUOTE,
+                },
             ),
             (
                 "functional_limitation",
                 "Patrick Donahue reports interrupted sleep and difficulty lifting without pain",
+                {"document_id": document_id, "page_number": 1},
             ),
         ):
             fact = post(
@@ -249,10 +283,19 @@ def main() -> int:
                     "fact_type": fact_type,
                     "value": {"note": summary},
                     "summary": summary,
-                    "sources": [{"document_id": document_id, "page_number": 1}],
+                    "sources": [citation],
                 },
             )
             client.post(f"/v1/facts/{fact['id']}/verify", headers=ATTORNEY)
+            if fact_type == "imaging_finding":
+                citation_record = fact["sources"][0]
+                print()
+                print(
+                    f"imaging fact {fact['id']} cites {mri_document_id} "
+                    f"page {citation_record['page_number']}: "
+                    f"{citation_record['citation_status']} with "
+                    f"{len(citation_record['bounding_boxes'] or [])} highlight box(es)"
+                )
 
         if arguments.extract:
             materials = upload_materials(client, case_id)

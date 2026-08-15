@@ -94,8 +94,19 @@ def ingest_document(
     session.add(document)
     session.flush()
 
-    for index, text in enumerate(extraction.pages, start=1):
-        session.add(DocumentPage(document_id=document.id, page_number=index, text=text))
+    for index, page in enumerate(extraction.pages, start=1):
+        session.add(
+            DocumentPage(
+                document_id=document.id,
+                page_number=index,
+                text=page.text,
+                width=page.width,
+                height=page.height,
+                extraction_method=page.extraction_method,
+                word_count=len(page.words),
+                words=[word.to_dict() for word in page.words] or None,
+            )
+        )
 
     audit.record(
         session,
@@ -109,6 +120,7 @@ def ingest_document(
             "page_count": extraction.page_count,
             "status": extraction.status.value,
             "storage_key": key,
+            "pages_with_geometry": sum(1 for page in extraction.pages if page.has_geometry),
         },
     )
     session.flush()

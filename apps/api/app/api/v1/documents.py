@@ -12,8 +12,15 @@ from sqlalchemy.orm import Session
 from ...config import get_settings
 from ...db import get_db
 from ...domain.enums import DocumentType
-from ...domain.models import Case, SourceDocument
-from ...domain.schemas import DocumentDetailOut, DocumentOut, UploadLimitsOut
+from ...domain.models import Case, DocumentPage, SourceDocument
+from ...domain.schemas import (
+    DocumentDetailOut,
+    DocumentOut,
+    DocumentPageOut,
+    PageGeometryOut,
+    UploadLimitsOut,
+    WordGeometryOut,
+)
 from ...ingestion import scanner
 from ...ingestion.scanner import UnsafeFileError
 from ...ingestion.service import (
@@ -104,6 +111,74 @@ def get_document_detail(
     user: CurrentUser = Depends(can_read),
 ) -> SourceDocument:
     return document
+
+
+@router.get("/documents/{document_id}/pages/{page_number}", response_model=DocumentPageOut)
+def get_document_page(
+    page_number: int,
+    document: SourceDocument = Depends(get_document),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(can_read),
+) -> DocumentPageOut:
+    """One page of canonical text — the string every citation offset indexes.
+
+    Deliberately excludes the word array: the evidence viewer asks for geometry
+    separately, and only for the page it is actually showing.
+    """
+    return _page_out(_require_page(db, document, page_number))
+
+
+@router.get(
+    "/documents/{document_id}/pages/{page_number}/geometry", response_model=PageGeometryOut
+)
+def get_document_page_geometry(
+    page_number: int,
+    document: SourceDocument = Depends(get_document),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(can_read),
+) -> PageGeometryOut:
+    """Word rectangles for one page, normalized to the rendered page.
+
+    Loaded lazily by the evidence viewer. A page with no text layer returns an
+    empty ``words`` list rather than an error: "this page has no geometry" is a
+    real answer, and the viewer says so instead of drawing something.
+    """
+    page = _require_page(db, document, page_number)
+    return PageGeometryOut(
+        document_id=document.id,
+        page_number=page.page_number,
+        width=page.width,
+        height=page.height,
+        extraction_method=page.extraction_method,
+        words=[WordGeometryOut.model_validate(word) for word in (page.words or [])],
+    )
+
+
+def _require_page(db: Session, document: SourceDocument, page_number: int) -> DocumentPage:
+    page = db.scalar(
+        select(DocumentPage).where(
+            DocumentPage.document_id == document.id,
+            DocumentPage.page_number == page_number,
+        )
+    )
+    if page is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"document {document.id} has no page {page_number}",
+        )
+    return page
+
+
+def _page_out(page: DocumentPage) -> DocumentPageOut:
+    return DocumentPageOut(
+        page_number=page.page_number,
+        text=page.text,
+        width=page.width,
+        height=page.height,
+        extraction_method=page.extraction_method,
+        word_count=page.word_count,
+        has_geometry=page.has_geometry,
+    )
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
