@@ -7,63 +7,25 @@ for dates and names. A model that never receives a stray fact cannot cite one.
 
 from __future__ import annotations
 
-from ...domain.money import format_money
-from ..context import DemandContext, format_date
+from ..context import DemandContext
 from .prompts import SECTION_SPECS, SectionSpec
 from .provider import FactPayload, LLMProvider, NarrativeRequest, NarrativeResult
+from .serialization import build_case_context
 
 NARRATIVE_SECTION_KEYS = tuple(SECTION_SPECS)
 
 
 def build_context_block(ctx: DemandContext) -> str:
-    lines: list[str] = []
-    lines.append(f"Client: {ctx.client_name}")
-    if ctx.insured:
-        lines.append(f"Named insured: {ctx.insured.full_name}")
-    if ctx.driver:
-        lines.append(f"Driver at time of collision: {ctx.driver.full_name}")
-    if ctx.insured and ctx.driver and ctx.insured.full_name != ctx.driver.full_name:
-        lines.append(
-            "Note: the named insured and the driver are different people; "
-            "do not conflate them."
-        )
-    if ctx.claim:
-        lines.append(f"Claim number: {ctx.claim.claim_number}")
-        lines.append(f"Date of loss: {format_date(ctx.claim.date_of_loss)}")
-        if ctx.claim.carrier:
-            lines.append(f"Carrier: {ctx.claim.carrier.name}")
-    if ctx.accident:
-        lines.append(f"Collision date: {format_date(ctx.accident.occurred_on)}")
-        if ctx.accident.location:
-            lines.append(f"Collision location: {ctx.accident.location}")
-        if ctx.accident.description:
-            lines.append(f"Collision description of record: {ctx.accident.description}")
+    """The case context, serialized so a privacy transformation cannot rewrite it.
 
-    if ctx.timeline:
-        lines.append("")
-        lines.append("Treatment timeline (authoritative, do not alter dates):")
-        for entry in ctx.timeline:
-            provider = f" — {entry.provider}" if entry.provider else ""
-            detail = f" ({entry.detail})" if entry.detail else ""
-            lines.append(f"  {format_date(entry.entry_date)}: {entry.title}{provider}{detail}")
-
-    if ctx.imaging_findings:
-        lines.append("")
-        lines.append("Imaging of record:")
-        for imaging in ctx.imaging_findings:
-            parts = [p for p in (imaging.level, imaging.finding, imaging.measurement) if p]
-            lines.append(
-                f"  {format_date(imaging.study_date)} {imaging.modality} "
-                f"{imaging.body_region or ''}: {' · '.join(parts)}".rstrip()
-            )
-
-    lines.append("")
-    lines.append(
-        "Monetary totals are computed by the system and inserted separately. "
-        "For reference only, do not restate: current medical expenses "
-        f"{format_money(ctx.damages.current_medical_expenses)}."
-    )
-    return "\n".join(lines)
+    This used to be prose — ``Named insured: <name>`` on one line, ``Driver at
+    time of collision: <name>`` on the next — and in production a detected
+    PERSON span crossed the newline and swallowed the word "Driver", leaving the
+    model a sentence that made the insured and the driver the same person. See
+    ``serialization.py`` for the full account. Roles now live outside values, in
+    records a replaced value cannot merge.
+    """
+    return build_case_context(ctx)
 
 
 def facts_for_section(ctx: DemandContext, spec: SectionSpec) -> list[FactPayload]:

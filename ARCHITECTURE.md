@@ -254,6 +254,54 @@ because the privacy path is down — would send exactly the material the boundar
 exists to protect straight past it. `get_provider()` resolves one provider and
 never another, and a test asserts an outage constructs no vendor client.
 
+### Structured context, and why
+
+The context handed to the model is records, not prose. That is a direct
+consequence of a production failure: the prose form put a role label at the
+start of a line and a name at the end of it, and a detected PERSON span crossed
+the newline and took the *next* line's label with it.
+
+```
+Named insured: Harold Whitfield          →   Named insured: ⟦PERSON:••••⟧ at
+Driver at time of collision: Dmitri Kovacs    time of collision: ⟦PERSON:••••⟧
+```
+
+The word "Driver" was gone, and the model wrote that the driver was the named
+insured. Validation blocked approval — the safety net held — but the model
+should never have been handed that sentence.
+
+`generation/ai/serialization.py` emits one bounded record per value:
+
+```xml
+<party id="pty_2" roles="named_insured"><value>"Harold Whitfield"</value></party>
+<party id="pty_3" roles="driver_at_time_of_collision"><value>"Dmitri Kovacs"</value></party>
+<relationship type="different_person" a="pty_2" b="pty_3"
+              a_role="named_insured" b_role="driver_at_time_of_collision"/>
+```
+
+Three properties carry the weight:
+
+- **Roles live outside values.** A field identifier is an attribute, so no
+  privacy transformation can touch it. For a value to eat the next field's
+  identifier it would have to swallow a closing quote, a closing tag, a
+  newline, an opening tag and an `id` — and the result would be malformed
+  rather than quietly meaning something else.
+- **Identity comes from party ids, not names.** One person holding two roles is
+  one record with two roles; two people who happen to share a name are two
+  records. Both survive pseudonymization, because ids are not sensitive values.
+- **Relationships are stated.** The prose note "do not conflate them" became a
+  record with no words in it to lose.
+
+The invariant is testable, and tested: strip the values from the original,
+strip the tokens from the protected version, and the two skeletons must be
+identical. `tests/test_prompt_serialization.py` asserts that for six role pairs
+and replays the exact over-capturing span that caused the incident — against
+both the old prose (which still breaks) and the new records (which do not).
+
+This is hardening, not privacy enforcement. The gateway remains the only thing
+that decides what is sensitive, and the deterministic validator remains the
+thing that decides whether prose may be approved.
+
 ### Decisions worth stating
 
 **Size is checked locally.** The gateway caps ordinary bodies at 256 KB. The

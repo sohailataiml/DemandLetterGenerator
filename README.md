@@ -336,6 +336,21 @@ rests on* (`fact → citation → document → page → span → bounding boxes`
 substitutes for the other, and the gateway is never treated as a system of
 record.
 
+**The context is structured, not prose.** Roles, party ids and relationships are
+attributes; every value is a bounded leaf:
+
+```xml
+<party id="pty_2" roles="named_insured"><value>"Harold Whitfield"</value></party>
+<party id="pty_3" roles="driver_at_time_of_collision"><value>"Dmitri Kovacs"</value></party>
+<relationship type="different_person" a="pty_2" b="pty_3" .../>
+```
+
+A privacy transformation replaces *values*; this makes it structurally hard for
+one to take a *role* with it. In production a detected PERSON span crossed a
+newline, swallowed the word "Driver", and the model drafted the driver as the
+named insured — validation caught it, but the prompt should not have said it.
+See [ARCHITECTURE.md](ARCHITECTURE.md#structured-context-and-why).
+
 **Fails closed.** If the gateway is unreachable, rate limiting, or refuses on
 policy, generation fails: the existing section is left exactly as it was, no
 demand is marked generated, and **there is no fallback to a direct vendor
