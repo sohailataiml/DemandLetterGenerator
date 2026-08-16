@@ -330,23 +330,99 @@ span marked — a poorer view, never a false one.
 
 ---
 
+## Phase 15 — The privacy boundary
+
+External drafting used to be a direct vendor call. It now leaves through the
+Secure AI Gateway, whose pipeline detects sensitive entities, applies the
+principal's policy, tokenizes or redacts, scans the outbound payload, calls the
+provider, and restores authorized values before answering.
+
+**Contract first.** The deployed OpenAPI schema at `sgw-api.onrender.com` is the
+source of truth for every field name in `app/gateway/`. `ChatRequest` accepts
+`session_id`, `provider`, `model`, `messages`, `temperature`,
+`max_output_tokens` and forbids unknown properties, so nothing else is sent —
+notably no tenant and no policy identifier, because the gateway derives both
+from the API key. There is no request field through which this application, or
+a browser talking to it, could ask for a weaker policy.
+
+**No structured-output field.** Unlike the vendor SDK, `/v1/chat` has no JSON
+schema parameter, so the JSON contract moved into the system turn and the reply
+is parsed strictly (tolerating a code fence, rejecting anything else). The
+grounding prompt itself is unchanged, and the fact-id filter still drops any id
+the model was not handed.
+
+**One client, four rules.** `app/gateway/client.py` is the only module that
+knows the gateway's URL or holds its credential: the key travels in the
+Authorization header and nowhere else — not in a repr, not in an exception, not
+in an audit record, and not in any response this service can produce. A test
+walks every browser-reachable endpoint, including `/openapi.json`, asserting the
+key never appears.
+
+**Size is refused locally.** The gateway caps ordinary bodies at 256 KB. The
+client measures the encoded body and raises before sending, so an oversized
+prompt costs no round trip and no rate-limit slot. Truncating to fit was
+rejected outright: dropping facts to make a prompt smaller silently changes what
+the letter rests on.
+
+**Errors are classified, not flattened.** The gateway's `ErrorCode` enum
+distinguishes cases that share a status — 422 is both `POLICY_VIOLATION` (a
+deliberate refusal) and `INVALID_REQUEST` (our bug) — so classification is
+driven by code, not status. Two mappings are deliberate: a rate limit surfaces
+as 429 with `Retry-After`, and an upstream 401/403 surfaces as **502**, because
+the attorney is authenticated with this service and telling their browser
+otherwise would be false.
+
+**Retries are narrow.** One retry, only for connection failures that never
+reached the model — a Render cold start looks exactly like that, and a test
+proves the second attempt succeeds. Read timeouts are not retried: the model may
+already have run, and the gateway publishes no idempotency mechanism that would
+make a repeat safe. Rate limits are never retried, since the budget being waited
+on is the one a retry would spend.
+
+**Failing closed is the point.** `get_provider()` resolves one provider and
+never substitutes another. A gateway outage does not become a vendor call — that
+substitution would route exactly the material the boundary exists to protect
+around it. The test monkeypatches `AnthropicProvider` into a tripwire, sets
+`ANTHROPIC_API_KEY`, fails the gateway, and asserts the tripwire never fires and
+the existing sections are byte-identical afterwards.
+
+**Counts only.** `PrivacySummary` is documented as the sole privacy detail that
+leaves the gateway, and `demands.generation_metadata` stores it verbatim beside
+request ids, upstream model and token usage. Entity *types* and their counts are
+safe to render; no detected value, token, or mapping exists on this side to
+render by accident. The frontend card shows exactly those numbers and says
+"nothing left this system" for local drafting rather than displaying zeros that
+could be mistaken for a clean scan.
+
+Revisions and extraction moved with drafting, because they share
+`DLG_LLM_PROVIDER` / `DLG_EXTRACTION_PROVIDER` and because extraction sends the
+most sensitive payload in the system — actual record text. Leaving either on a
+direct vendor path would have made the boundary optional in practice.
+
+---
+
 ## Test counts
 
 | Suite | Baseline | Now |
 | --- | --- | --- |
-| Backend | 61 | **341** |
-| Frontend | 66 | **149** |
+| Backend | 61 | **401** |
+| Frontend | 66 | **163** |
 
 New backend suites: template analyzer, binder, fidelity, API, golden document,
-provenance (spans, geometry, API, backfill), extraction, grounding, revisions,
-jobs, migrations, plus `tests/invariants/` and `tests/adversarial/`.
+provenance (spans, geometry, API, backfill), secure gateway (contract, error
+taxonomy, fail-closed), extraction, grounding, revisions, jobs, migrations, plus
+`tests/invariants/` and `tests/adversarial/`.
+
+Three further tests are an **opt-in live contract check** against the deployed
+gateway (`DLG_LIVE_GATEWAY=1` plus a key). They are skipped by default, so the
+ordinary suite needs no network and no credential.
 
 `make gate` output on the current tree:
 
 ```
 Demand Letter Quality Gate
 
-  Unit/integration tests           PASS        (341 tests)
+  Unit/integration tests           PASS        (401 tests)
   Fact lifecycle invariants        PASS        (21 tests)
   Unverified fact escapes          0           (7 tests)
   Arithmetic delegated to LLM      0           (10 tests)
@@ -357,7 +433,7 @@ Demand Letter Quality Gate
   Template fidelity (golden doc)   PASS        (5 tests)
   Migrations match the models      PASS        (5 tests)
 
-  341 tests executed in 701s
+  401 tests executed in 1013s
 
   All gates passed.
 ```

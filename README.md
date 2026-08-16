@@ -189,16 +189,19 @@ of the pointer to its source improves.
 Next.js (apps/web, :3000)
    │  typed fetch client, TanStack Query
 FastAPI (apps/api, :8000)
-   │
+   │  verified fact store → prompt builder
 SQLite + filesystem object store (dev) │ Postgres + S3-compatible (prod-ready)
    │
-Pattern extractor + stub drafter (default) │ Claude (DLG_LLM_PROVIDER=anthropic)
+Pattern extractor + stub drafter (default)
+   │ or, for external drafting:
+Secure AI Gateway (privacy boundary) → external LLM
 ```
 
 | Package | Responsibility |
 | --- | --- |
 | `templates/` | analyze a .docx, bind into a clone of it, prove nothing else changed |
 | `extraction/` | case materials → chunks → candidates → **PROPOSED** facts |
+| `gateway/` | the one client for the Secure AI Gateway: auth, size check, error taxonomy |
 | `provenance/` | resolve a quote to page offsets **and to boxes on the rendered page** |
 | `grounding/` | segment drafted prose into claims, grade each against verified facts |
 | `revisions/` | attorney AI edits as validated patches, applied only on acceptance |
@@ -290,12 +293,96 @@ already stored on historical demands.
   inventing anything. The drafter concatenates verified fact summaries; the
   extractor reads labelled patterns. This is what the test suite runs against,
   so tests need no API key and no network.
-- **`anthropic`** — Claude (`claude-opus-5`) with structured JSON output and
-  adaptive thinking. Set `ANTHROPIC_API_KEY`.
+- **`secure_gateway`** — the preferred external path. Prompts cross the Secure
+  AI Gateway's privacy pipeline before any model sees them, and the draft used
+  is the restored response. See [The privacy boundary](#the-privacy-boundary).
+- **`anthropic`** — Claude directly via the vendor SDK, **bypassing the privacy
+  gateway**. Explicit opt-in, retained for continuity, never selected
+  automatically and never used as a fallback.
 
-Either way the output goes through the same checks: claimed fact ids are
-filtered to facts actually supplied, quoted passages must exist in the stored
-document, and every claim is graded against the verified fact store.
+Whichever is configured, the output goes through the same checks: claimed fact
+ids are filtered to facts actually supplied, quoted passages must exist in the
+stored document, and every claim is graded against the verified fact store.
+
+## The privacy boundary
+
+External model calls leave through the Secure AI Gateway
+(`https://sgw-api.onrender.com`), which detects sensitive data, applies the
+tenant's policy, tokenizes or redacts, scans the outbound payload, calls the
+provider, and restores authorized values before answering.
+
+```
+Next.js (browser)
+     │  case data, never a gateway credential
+FastAPI (this service)
+     │  verified facts → section context → prompt
+     │  Authorization: Bearer SECURE_GATEWAY_API_KEY   ← server-to-server only
+Secure AI Gateway  POST /v1/chat
+     │  detect → policy → tokenize/redact → outbound scan
+     │  external provider → restore authorized values
+Restored prose
+     │
+Deterministic validation → attorney approval
+```
+
+**The browser never calls the gateway.** DemandLetterGenerator's FastAPI backend
+holds the gateway credential and performs server-to-server requests, which keeps
+the key outside the browser and sidesteps CORS entirely — the gateway allows
+only its own workspace origin, and nothing here needs that changed.
+
+Privacy and provenance are separate controls and this repository keeps them
+separate. The gateway governs *what leaves*; provenance governs *what a claim
+rests on* (`fact → citation → document → page → span → bounding boxes`). Neither
+substitutes for the other, and the gateway is never treated as a system of
+record.
+
+**Fails closed.** If the gateway is unreachable, rate limiting, or refuses on
+policy, generation fails: the existing section is left exactly as it was, no
+demand is marked generated, and **there is no fallback to a direct vendor
+call** — the substitution would route the very content the boundary exists to
+protect around it. `tests/test_secure_gateway_generation.py` asserts this.
+
+Operational constraints of the deployment, and how they surface:
+
+| Constraint | Gateway answer | What the reviewer sees |
+| --- | --- | --- |
+| Rate limit, per authenticated principal | `429 RATE_LIMIT_EXCEEDED` | "rate limiting this workspace… no drafting was applied", `Retry-After` respected, section untouched |
+| Ordinary request body ≤ 256 KB | `413 REQUEST_TOO_LARGE` | checked locally *before* sending; "reduce the section context… No demand section was modified" |
+| Privacy policy refusal | `422 POLICY_VIOLATION` | "the privacy policy declined this content" — a decision, not a crash |
+| Credential rejected | `401`/`403` | reported as `502` here: the attorney's session is fine, our configuration is not |
+| Gateway or provider down | `5xx` / timeout | `502`, one retry only for connection failures that never reached the model |
+
+Document uploads use the gateway's separate `/v1/documents` endpoints and are
+**not** used by this service: ingestion, canonical page text, spans and bounding
+boxes remain this repository's own, because they are the evidence chain.
+
+Configuration (backend only — see `.env.example`):
+
+```bash
+DLG_LLM_PROVIDER=secure_gateway
+SECURE_GATEWAY_URL=https://sgw-api.onrender.com
+SECURE_GATEWAY_API_KEY=          # server-side only
+SECURE_GATEWAY_PROVIDER=openai   # an alias the gateway allows for this key
+SECURE_GATEWAY_MODEL=default     # see GET /v1/providers
+SECURE_GATEWAY_TIMEOUT_SECONDS=60
+```
+
+For offline local work and the whole test suite:
+
+```bash
+DLG_LLM_PROVIDER=stub
+```
+
+> **Never put `SECURE_GATEWAY_API_KEY` in a `NEXT_PUBLIC_*` variable.** Anything
+> `NEXT_PUBLIC_` is compiled into the browser bundle and served to every
+> visitor. There is no frontend code path that reads the gateway key, and
+> `apps/web/src/components/case/ai-privacy.test.tsx` fails the build if one
+> appears.
+
+Diagnostics: `GET /health` reports `secure_gateway_configured` without touching
+the network; `GET /v1/ai-boundary?probe=true` additionally calls the gateway's
+unauthenticated readiness probe. Neither returns the credential. Gateway
+`/metrics` is scraped by platform monitoring, not by this service.
 
 ## Security
 
@@ -344,6 +431,14 @@ An honest list of what the spec asks for that is not here:
 - **Word geometry needs PyMuPDF.** Without it PDFs still extract text through
   pypdf and citations resolve to exact spans, but no bounding boxes are stored
   and the viewer says so rather than drawing one.
+- **Gateway sessions are not reused.** Each section is drafted as its own
+  stateless `/v1/chat` call, so the gateway mints fresh tokens per request
+  rather than reusing a conversation's mappings. Session continuity is
+  available in the contract and unused here; the verified fact store is the
+  only conversational state that matters.
+- **The gateway's document endpoints are unused.** `/v1/documents` may later
+  support AI-assisted extraction, but ingestion, canonical page text and
+  bounding boxes stay in this repository so the evidence chain has one owner.
 - **Malware scanning is a signature check** (EICAR) plus type/size validation.
   `_external_scan()` in `app/ingestion/scanner.py` is the hook for a real scanner.
 - **Encryption at rest, tenant isolation and signed URLs** are deployment
@@ -355,6 +450,7 @@ An honest list of what the spec asks for that is not here:
 apps/api/app/
   templates/     analyzer, manifest, slots, binder, fidelity
   extraction/    chunker, prompts, providers, service
+  gateway/       Secure AI Gateway client and error classification
   provenance/    citation span resolution, page geometry, backfill
   grounding/     claim segmentation and grading
   revisions/     constraints, providers, proposal lifecycle

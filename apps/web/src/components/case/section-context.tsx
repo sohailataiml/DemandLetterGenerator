@@ -10,6 +10,7 @@ import {
   SectionHeading,
   Skeleton,
 } from "@/components/ui/primitives";
+import { AiPrivacyCard } from "./ai-privacy";
 import { useEvidence } from "./evidence";
 import { CitationStatusBadge } from "./source-viewer";
 import { IssueCard } from "./validation-list";
@@ -62,6 +63,16 @@ export function SectionContextRail({
           </Badge>
           {section.edited_by ? <Badge tone="muted">by {section.edited_by}</Badge> : null}
         </div>
+
+        {/* Privacy first, then validation, then the facts behind the prose:
+            what left the system, what the checks say, and what it rests on. */}
+        {section.source === "ai" ? (
+          <AiPrivacyCard
+            metadata={demand.generation_metadata}
+            sectionKey={section.key}
+            restoredText={section.body}
+          />
+        ) : null}
 
         <div>
           <SectionHeading>Validation</SectionHeading>

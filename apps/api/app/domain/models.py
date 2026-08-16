@@ -562,6 +562,11 @@ class Demand(Base, TimestampMixin):
     locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     damages_snapshot: Mapped[dict | None] = mapped_column(JSON)
+    #: Where this draft's prose crossed an external boundary, and what that
+    #: boundary reported. Safe metadata only — request/session ids, upstream
+    #: provider and model, token usage, and the privacy summary of counts. Never
+    #: a prompt, a detected value, a token mapping, or any credential.
+    generation_metadata: Mapped[dict | None] = mapped_column(JSON)
 
     # Template binding. NULL means "no template bound" and the demand renders
     # through the built-in deterministic layout instead.

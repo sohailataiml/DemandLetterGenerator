@@ -63,6 +63,17 @@ class Settings:
     anthropic_api_key: str | None
     anthropic_effort: str
 
+    # Secure AI Gateway — the privacy boundary for external model calls.
+    # The key is server-side only. It is never read by the frontend, never
+    # returned by any endpoint, and never written to an audit record; see
+    # app/gateway/client.py.
+    secure_gateway_url: str
+    secure_gateway_api_key: str | None
+    secure_gateway_provider: str
+    secure_gateway_model: str
+    secure_gateway_timeout_seconds: float
+    secure_gateway_max_output_tokens: int
+
     # Letterhead / firm identity used by the deterministic template blocks.
     firm_name: str
     firm_address_lines: list[str] = field(default_factory=list)
@@ -75,6 +86,16 @@ class Settings:
     @property
     def is_anthropic_enabled(self) -> bool:
         return self.llm_provider == "anthropic" and bool(self.anthropic_api_key)
+
+    @property
+    def is_secure_gateway_configured(self) -> bool:
+        """Everything the gateway needs is present. Says nothing about reachability."""
+        return bool(
+            self.secure_gateway_url
+            and self.secure_gateway_api_key
+            and self.secure_gateway_provider
+            and self.secure_gateway_model
+        )
 
 
 @lru_cache(maxsize=1)
@@ -102,6 +123,15 @@ def get_settings() -> Settings:
         anthropic_model=_env("DLG_ANTHROPIC_MODEL", "claude-opus-5"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         anthropic_effort=_env("DLG_ANTHROPIC_EFFORT", "high"),
+        secure_gateway_url=_env("SECURE_GATEWAY_URL", "https://sgw-api.onrender.com"),
+        secure_gateway_api_key=os.environ.get("SECURE_GATEWAY_API_KEY") or None,
+        # Defaults match what the deployed gateway actually offers; ask it with
+        # `GET /v1/providers` rather than guessing, since an alias it does not
+        # allow is refused with PROVIDER_NOT_ALLOWED on the first call.
+        secure_gateway_provider=_env("SECURE_GATEWAY_PROVIDER", "openai"),
+        secure_gateway_model=_env("SECURE_GATEWAY_MODEL", "default"),
+        secure_gateway_timeout_seconds=float(_env("SECURE_GATEWAY_TIMEOUT_SECONDS", "60")),
+        secure_gateway_max_output_tokens=_env_int("SECURE_GATEWAY_MAX_OUTPUT_TOKENS", 2000),
         firm_name=_env("DLG_FIRM_NAME", "Stalwart Law Group"),
         firm_address_lines=_env_list(
             "DLG_FIRM_ADDRESS",

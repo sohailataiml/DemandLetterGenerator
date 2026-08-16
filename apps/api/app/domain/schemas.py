@@ -648,6 +648,11 @@ class DemandOut(ApiModel):
     template_sha256: str | None = None
     fidelity_report: dict[str, Any] | None = None
     claim_report: dict[str, Any] | None = None
+    #: Safe AI-boundary metadata: which boundary drafting crossed, the upstream
+    #: provider/model, gateway request ids, token usage, and the privacy summary
+    #: of counts. Contains no credential and no detected value, which is what
+    #: makes it safe to hand to a browser.
+    generation_metadata: dict[str, Any] | None = None
     sections: list[DemandSectionOut] = Field(default_factory=list)
     issues: list[ValidationIssueOut] = Field(default_factory=list)
 

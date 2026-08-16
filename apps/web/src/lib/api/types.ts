@@ -406,6 +406,56 @@ export interface ClaimReport {
   unsupported_claims: UnsupportedClaim[];
 }
 
+/**
+ * Safe metadata about the AI boundary a draft crossed. Counts and identifiers
+ * only — the backend never puts a detected value, a token, or a credential in
+ * here, which is what makes it renderable in a browser at all.
+ */
+export interface PrivacySummary {
+  detected?: number;
+  tokenized?: number;
+  redacted?: number;
+  pseudonymized?: number;
+  blocked?: number;
+  allowed?: number;
+  restored?: number;
+  unknown_tokens?: number;
+  entity_types?: Record<string, number>;
+}
+
+/**
+ * The gateway's masked rendering of one request. `text` carries no token
+ * identifiers — the gateway masks them to `⟦TYPE:••••⟧` before returning it, so
+ * this is safe to render in a browser.
+ */
+export interface ProtectedPreview {
+  text?: string | null;
+  entity_summary?: { entity_type: string; count: number; action: string }[];
+  outbound_scan?: string | null;
+  truncated?: boolean;
+}
+
+export interface SectionBoundary {
+  gateway_request_id?: string | null;
+  privacy?: PrivacySummary;
+  protected_preview?: ProtectedPreview | null;
+}
+
+export interface GenerationMetadata {
+  /** "secure_gateway" | "direct_provider" | "local" */
+  ai_boundary: string;
+  upstream_provider?: string | null;
+  upstream_model?: string | null;
+  gateway_request_ids?: string[];
+  gateway_session_ids?: string[];
+  privacy?: PrivacySummary;
+  usage?: Record<string, number> | null;
+  latency_ms?: number;
+  calls?: number;
+  /** One record per section drafted in the last run, keyed by section key. */
+  sections?: Record<string, SectionBoundary>;
+}
+
 export interface Demand {
   id: string;
   case_id: string;
@@ -427,6 +477,7 @@ export interface Demand {
   template_sha256: string | null;
   fidelity_report: FidelityReport | null;
   claim_report: ClaimReport | null;
+  generation_metadata: GenerationMetadata | null;
   sections: DemandSection[];
   issues: ValidationIssue[];
 }

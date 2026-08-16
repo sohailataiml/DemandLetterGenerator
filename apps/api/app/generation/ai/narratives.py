@@ -111,6 +111,7 @@ def generate_section(
             model=result.model,
             prompt_version=result.prompt_version,
             missing=result.missing,
+            gateway=result.gateway,
         )
     return result
 

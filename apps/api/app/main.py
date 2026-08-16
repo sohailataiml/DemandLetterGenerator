@@ -54,10 +54,19 @@ app.include_router(v1_router)
 
 @app.get("/health", tags=["ops"])
 def health() -> dict:
+    """Liveness for this service only.
+
+    Deliberately makes no network call. Whether the Secure AI Gateway is
+    *configured* is local knowledge and useful here; whether it is *reachable*
+    is a separate question answered by ``/v1/ai-boundary``, because a demand
+    letter service that cannot draft can still be read, validated, approved and
+    downloaded, and reporting it as unhealthy would be wrong.
+    """
     settings = get_settings()
     return {
         "status": "ok",
         "version": __version__,
         "llm_provider": settings.llm_provider,
         "anthropic_configured": settings.is_anthropic_enabled,
+        "secure_gateway_configured": settings.is_secure_gateway_configured,
     }

@@ -35,6 +35,7 @@ from ...generation.composer import (
 from ...security.auth import CurrentUser, can_approve, can_edit_case, can_read
 from ...templates.service import TemplateError
 from ..deps import get_case, get_demand
+from .ai_errors import provider_failure
 
 router = APIRouter(tags=["demands"])
 
@@ -83,9 +84,10 @@ def generate(
     except DemandLockedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ProviderError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"drafting failed: {exc}"
-        ) from exc
+        # Nothing was written: generation either replaces a section wholesale or
+        # leaves it exactly as it was. The status distinguishes "try again
+        # later" from "this will never work as sent" so the UI can say which.
+        raise provider_failure(exc, action="drafting") from exc
     return updated
 
 

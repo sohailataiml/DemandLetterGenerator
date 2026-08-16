@@ -108,8 +108,44 @@ authentication is a placeholder.
 
 - No secret is committed. `ANTHROPIC_API_KEY` is read from the environment and
   is only required when `DLG_LLM_PROVIDER=anthropic`.
+- `SECURE_GATEWAY_API_KEY` is **backend-only**. It travels in one place — the
+  `Authorization` header of a server-to-server request from FastAPI — and
+  appears in no repr, no exception, no log line, no audit payload, and no API
+  response. A test walks every browser-reachable endpoint, `/openapi.json`
+  included, asserting the key is absent from each.
+- **There is no `NEXT_PUBLIC_SECURE_GATEWAY_API_KEY`, and there must never be
+  one.** Anything `NEXT_PUBLIC_` is compiled into the browser bundle and served
+  to every visitor. A frontend test fails the build if the name, or the gateway
+  host, appears anywhere in `apps/web/src`.
 - `.env.example` documents every variable and contains no real value.
 - Audit payloads record model and provider names, never keys.
+
+---
+
+## The AI privacy boundary
+
+When `DLG_LLM_PROVIDER=secure_gateway`, prompts leave through the Secure AI
+Gateway, which detects sensitive entities, applies the principal's policy,
+tokenizes or redacts them, scans the outbound payload, and restores authorized
+values in the reply.
+
+- **The browser never calls the gateway.** FastAPI is the only caller, which
+  keeps the credential server-side and makes the gateway's CORS policy
+  irrelevant here rather than an obstacle.
+- **The request cannot ask for a weaker policy.** Tenant and policy are derived
+  by the gateway from the API key; the deployed `ChatRequest` schema has no
+  field for either, so neither this service nor a browser talking to it can
+  select one.
+- **It fails closed.** An unreachable, rate-limited or refusing gateway means
+  the section is not drafted and the existing text stands. There is no automatic
+  fallback to a direct vendor call — see [ADR-010](docs/ADRs/ADR-010-external-model-calls-cross-a-privacy-boundary.md).
+- **Only counts are retained.** `demands.generation_metadata` stores the
+  gateway's `PrivacySummary` (detected/tokenized/redacted/pseudonymized/blocked/
+  restored, and per-entity-*type* counts) plus request ids and token usage. No
+  detected value, token, or vault mapping is ever returned to this service, so
+  none can be stored or displayed.
+- Prompts are not written to the audit trail; recording them would undo the
+  boundary the gateway provides.
 
 ---
 

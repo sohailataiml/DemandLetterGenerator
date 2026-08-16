@@ -341,6 +341,26 @@ def main() -> int:
             client, f"/v1/demands/{demand['id']}/generate", {}, expect=200
         )
 
+        # Where the prose came from, and what the privacy boundary did to the
+        # prompts on the way out. "local" means nothing left this process.
+        boundary = demand.get("generation_metadata") or {}
+        if boundary:
+            print()
+            print(f"AI boundary: {boundary.get('ai_boundary')}")
+            if boundary.get("ai_boundary") == "secure_gateway":
+                privacy = boundary.get("privacy") or {}
+                print(
+                    f"  upstream {boundary.get('upstream_provider')}/"
+                    f"{boundary.get('upstream_model')} - {boundary.get('calls')} call(s)"
+                )
+                print(
+                    "  privacy: "
+                    + ", ".join(
+                        f"{name} {privacy.get(name, 0)}"
+                        for name in ("detected", "tokenized", "pseudonymized", "redacted", "blocked")
+                    )
+                )
+
         print("\n" + "=" * 78)
         for section in demand["sections"]:
             print(f"\n--- {section['title'].upper()}  [{section['source']}]")

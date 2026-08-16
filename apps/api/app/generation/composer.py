@@ -112,6 +112,8 @@ def generate_demand(
     demand.prompt_version = PROMPT_VERSION
     demand.generated_at = _now()
     demand.damages_snapshot = context.damages.to_dict()
+    generation_metadata = summarize_boundary(provider.name, narratives)
+    demand.generation_metadata = generation_metadata
     if demand.status == DemandStatus.APPROVED:  # pragma: no cover - guarded above
         demand.status = DemandStatus.DRAFT
 
@@ -129,6 +131,9 @@ def generate_demand(
             "regenerated": regenerate_sections or "all",
             "fact_ids_supplied": sorted(context.verified_fact_ids()),
             "sections": [d.key for d in drafts],
+            # Safe boundary metadata only: counts, ids, and model names. Never
+            # a prompt, a detected value, a token map, or the gateway key.
+            **audit_safe(generation_metadata),
         },
     )
     session.flush()
@@ -141,11 +146,112 @@ class _ExistingNarrative:
 
     insufficient_evidence = False
     missing = None
+    gateway: dict = {}
 
     def __init__(self, section_key: str, text: str, used_fact_ids: list[str]) -> None:
         self.section_key = section_key
         self.text = text
         self.used_fact_ids = used_fact_ids
+
+
+#: Privacy summary keys the gateway documents. Counts only — the gateway states
+#: this summary is the sole privacy detail that leaves it, and this service
+#: neither adds to it nor derives anything from it.
+PRIVACY_COUNT_KEYS = (
+    "detected",
+    "tokenized",
+    "redacted",
+    "pseudonymized",
+    "blocked",
+    "allowed",
+    "restored",
+    "unknown_tokens",
+)
+
+
+def summarize_boundary(provider_name: str, narratives: dict) -> dict:
+    """Roll the per-section boundary metadata up to one record for the demand.
+
+    A generation drafts several sections, which is several gateway calls. What
+    a reviewer needs is one answer to "did this letter's prose cross a privacy
+    boundary, and what did that boundary do" — so counts are summed, ids are
+    listed, and anything absent stays absent rather than being defaulted to a
+    reassuring zero.
+    """
+    calls = [
+        result.gateway
+        for result in narratives.values()
+        if getattr(result, "gateway", None)
+    ]
+    if not calls:
+        return {"ai_boundary": "local" if provider_name == "stub" else "direct_provider"}
+
+    privacy: dict[str, int] = {}
+    entity_types: dict[str, int] = {}
+    usage: dict[str, int] = {}
+    for call in calls:
+        summary = call.get("privacy") or {}
+        for key in PRIVACY_COUNT_KEYS:
+            value = summary.get(key)
+            if isinstance(value, int):
+                privacy[key] = privacy.get(key, 0) + value
+        for entity, count in (summary.get("entity_types") or {}).items():
+            if isinstance(count, int):
+                entity_types[entity] = entity_types.get(entity, 0) + count
+        for key, value in (call.get("usage") or {}).items():
+            if isinstance(value, int):
+                usage[key] = usage.get(key, 0) + value
+
+    if entity_types:
+        privacy["entity_types"] = entity_types
+
+    return {
+        "ai_boundary": calls[0].get("ai_boundary", "secure_gateway"),
+        "upstream_provider": calls[0].get("upstream_provider"),
+        "upstream_model": calls[0].get("upstream_model"),
+        "gateway_request_ids": [c.get("gateway_request_id") for c in calls if c.get("gateway_request_id")],
+        "gateway_session_ids": sorted(
+            {c.get("gateway_session_id") for c in calls if c.get("gateway_session_id")}
+        ),
+        "privacy": privacy,
+        "usage": usage or None,
+        "latency_ms": sum(int(c.get("latency_ms") or 0) for c in calls),
+        "calls": len(calls),
+        # Per section, so a reviewer can open one paragraph and see what the
+        # provider was actually handed for it.
+        "sections": {
+            key: _section_boundary(result.gateway)
+            for key, result in narratives.items()
+            if getattr(result, "gateway", None)
+        },
+    }
+
+
+def _section_boundary(call: dict) -> dict:
+    """One section's boundary record: ids, counts, and the masked preview.
+
+    The preview is the gateway's own masked rendering of what it sent the
+    provider — sensitive values already replaced with ``⟦TYPE:••••⟧`` on the
+    gateway side. It is stored because an attorney reviewing an AI-drafted
+    paragraph is entitled to see what left the building, and it is safe to store
+    because the values that would matter are not in it.
+    """
+    return {
+        "gateway_request_id": call.get("gateway_request_id"),
+        "privacy": dict(call.get("privacy") or {}),
+        "protected_preview": call.get("protected_preview"),
+    }
+
+
+def audit_safe(metadata: dict) -> dict:
+    """The boundary metadata minus anything prompt-shaped.
+
+    The audit trail records that a boundary was crossed and what it did —
+    counts, ids, model names — and never what was said. A masked preview is
+    still a rendering of a prompt, and an append-only log is the wrong place to
+    accumulate those.
+    """
+    return {key: value for key, value in metadata.items() if key != "sections"}
 
 
 def rendered_sections(demand: Demand) -> list[RenderedSection]:

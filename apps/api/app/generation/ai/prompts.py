@@ -32,6 +32,23 @@ Write in the voice of plaintiff's counsel: factual, measured, and free of \
 speculation about the reader's motives.
 """
 
+#: Appended to the system turn on transports that have no structured-output
+#: field of their own. The Secure AI Gateway's ``/v1/chat`` accepts provider,
+#: model, messages, temperature and max_output_tokens and nothing else, so the
+#: JSON contract has to travel in the prompt. Whatever comes back is parsed
+#: strictly and then re-checked against the fact store regardless.
+JSON_OUTPUT_INSTRUCTION = """\
+
+Return a single JSON object and nothing else — no prose, no code fence, no
+commentary — with exactly these keys:
+
+  "section"               the section key you were asked to draft
+  "text"                  the drafted prose, or "" when evidence is insufficient
+  "used_fact_ids"         array of the fact IDs you actually relied on
+  "insufficient_evidence" true when the facts do not support a draft
+  "missing"               what is missing when insufficient_evidence is true, else ""
+"""
+
 RESULT_SCHEMA = {
     "type": "object",
     "properties": {

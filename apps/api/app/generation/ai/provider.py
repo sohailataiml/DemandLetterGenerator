@@ -1,12 +1,16 @@
 """LLM provider abstraction for narrative drafting.
 
-Two implementations ship:
+Three implementations ship:
 
 * :class:`GroundedStubProvider` — deterministic, offline, and incapable of
   inventing anything: it assembles sentences directly from verified fact
   summaries. This is the default, and it is what the test suite runs against.
-* :class:`AnthropicProvider` — Claude via the official SDK, with structured
-  output and the grounding prompt contract.
+* ``SecureGatewayProvider`` (``secure_gateway.py``) — the preferred external
+  path. Prompts leave through the Secure AI Gateway's privacy pipeline and the
+  draft is the restored response.
+* :class:`AnthropicProvider` — Claude via the official SDK, calling the vendor
+  **directly and bypassing the privacy gateway**. Retained for continuity and
+  never selected automatically; see :func:`get_provider`.
 
 Either way the result is re-validated against the fact store downstream; the
 provider is a drafting assistant, never the source of truth.
@@ -23,7 +27,29 @@ from .prompts import PROMPT_VERSION, RESULT_SCHEMA, SYSTEM_PROMPT, SectionSpec, 
 
 
 class ProviderError(RuntimeError):
-    """The provider could not produce a usable draft."""
+    """The provider could not produce a usable draft.
+
+    Carries the optional classification a boundary failure came with, so the API
+    layer can answer a rate limit as a rate limit and an oversized prompt as an
+    oversized prompt. ``http_status`` is what *this* service should return; it
+    is not the status the upstream returned, because relaying a gateway 401 to a
+    browser would tell an authenticated attorney they are signed out.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        retry_after: float | None = None,
+        request_id: str | None = None,
+        http_status: int = 502,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retry_after = retry_after
+        self.request_id = request_id
+        self.http_status = http_status
 
 
 @dataclass(frozen=True)
@@ -61,6 +87,11 @@ class NarrativeResult:
     model: str | None = None
     prompt_version: str = PROMPT_VERSION
     missing: str | None = None
+    #: Safe metadata from the privacy boundary when one was crossed: request and
+    #: session ids, the upstream provider/model, token usage, and the gateway's
+    #: privacy summary of **counts only**. Empty for offline providers. No
+    #: detected value, token, or mapping is ever present here.
+    gateway: dict[str, Any] = field(default_factory=dict)
 
 
 class LLMProvider(Protocol):
@@ -174,9 +205,26 @@ class AnthropicProvider:
 
 
 def get_provider(name: str | None = None) -> LLMProvider:
+    """Resolve the configured drafter. Never falls back to a different one.
+
+    A misconfigured or unavailable provider raises. In particular, selecting
+    ``secure_gateway`` and finding it unusable does **not** quietly become a
+    direct vendor call: that would send the material the gateway exists to
+    protect straight past it, which is the one failure mode this boundary is
+    for. Failing closed leaves the existing section untouched.
+    """
     settings = get_settings()
     resolved = (name or settings.llm_provider).lower()
+    if resolved == "secure_gateway":
+        from .secure_gateway import SecureGatewayProvider
+
+        if not settings.secure_gateway_api_key:
+            raise ProviderError(
+                "DLG_LLM_PROVIDER=secure_gateway but SECURE_GATEWAY_API_KEY is not set"
+            )
+        return SecureGatewayProvider()
     if resolved == "anthropic":
+        # Explicit opt-in only, and documented as bypassing the privacy gateway.
         if not settings.anthropic_api_key:
             raise ProviderError(
                 "DLG_LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set"

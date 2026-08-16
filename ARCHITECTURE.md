@@ -193,6 +193,94 @@ second provenance model.
 
 ---
 
+## The privacy boundary
+
+Provenance answers *what a claim rests on*. Privacy answers *what left the
+building*. They are different controls with different failure modes, and this
+codebase keeps them in different modules for exactly that reason.
+
+External model calls leave through the Secure AI Gateway. `app/gateway/` is the
+only place in the repository that knows the gateway's URL, holds its credential,
+or imports an HTTP client for it.
+
+```
+               APPLICATION TRUST BOUNDARY
+
+Verified facts (VERIFIED only)
+      │
+Section-specific retrieval — a section only ever sees the fact types it may
+      │                      talk about
+Prompt builder — grounding contract, no arithmetic, no invention
+      │
+FastAPI backend   ← holds SECURE_GATEWAY_API_KEY; the browser never does
+      │
+──────────────────────────────────────────────────────────────────────────
+                   PRIVACY BOUNDARY   POST /v1/chat
+      │
+Secure AI Gateway
+      ├─ detect sensitive entities
+      ├─ apply the principal's policy   (tenant and policy come from the API
+      │                                  key, never from our request body)
+      ├─ tokenize / redact / pseudonymize / block
+      ├─ outbound leakage scan
+      ├─ rate limit per principal
+      ├─ invoke the external provider
+      └─ restore authorized values
+      │
+──────────────────────────────────────────────────────────────────────────
+Restored prose  +  PrivacySummary (counts only)
+      │
+Fact-id filter → claim grounding → deterministic validation
+      │
+Attorney approval (backend-controlled, re-validated immediately before)
+```
+
+Provenance runs alongside, and is untouched by any of it:
+
+```
+Fact → citation → document → page → span → bounding boxes → highlighted source
+```
+
+### What the boundary is not
+
+It is not a source of truth. The gateway restores values and returns prose; that
+prose is still graded against the verified fact store, still validated, and
+still unapprovable while a BLOCKING issue stands. A gateway that answered
+perfectly would not raise the trust level of a single sentence in the letter.
+
+It is not a fallback arrangement. When the gateway fails, generation fails. The
+one substitution that must never happen — reaching for the vendor directly
+because the privacy path is down — would send exactly the material the boundary
+exists to protect straight past it. `get_provider()` resolves one provider and
+never another, and a test asserts an outage constructs no vendor client.
+
+### Decisions worth stating
+
+**Size is checked locally.** The gateway caps ordinary bodies at 256 KB. The
+client refuses an oversized request before sending it, so the reviewer gets a
+precise message instead of a 413 that also cost a rate-limit slot. Nothing is
+truncated: dropping facts to fit would quietly change what the letter is based
+on.
+
+**Retries are narrow.** One retry, only for connection failures that
+demonstrably never reached the model — a Render cold start looks exactly like
+that. Read timeouts are *not* retried, because the model may already have run
+and the gateway publishes no idempotency mechanism to make a repeat safe.
+Rate limits are never retried: the limit is per principal, so a retry loop
+spends the budget it is waiting for.
+
+**Upstream 401/403 becomes 502 here.** The attorney is authenticated with this
+service; it is our credential to the gateway that failed. Relaying 401 would
+tell a browser its session is invalid, which is both false and disruptive.
+
+**Only counts are stored.** `PrivacySummary` — detected, tokenized, redacted,
+pseudonymized, blocked, restored, and per-entity-*type* counts — is the sole
+privacy detail the gateway emits, and `demands.generation_metadata` stores it
+verbatim next to request ids, upstream model, and token usage. No detected
+value, token, or mapping exists on this side to store or render.
+
+---
+
 ## Claim grounding
 
 `grounding/` grades machine-drafted prose:

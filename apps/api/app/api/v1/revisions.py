@@ -18,6 +18,7 @@ from ...revisions.constraints import RevisionConstraint
 from ...revisions.provider import RevisionError
 from ...security.auth import CurrentUser, can_approve, can_edit_case, can_read
 from ..deps import get_demand
+from .ai_errors import provider_failure
 
 router = APIRouter(tags=["revisions"])
 
@@ -77,9 +78,9 @@ def propose_revision(
     except revisions.RevisionStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except RevisionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"revision failed: {exc}"
-        ) from exc
+        # A proposal is inert until accepted, so nothing about this failure can
+        # have touched the demand — the message says so.
+        raise provider_failure(exc, action="revision") from exc
     return _detail(view)
 
 
