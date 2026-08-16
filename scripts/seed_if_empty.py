@@ -49,6 +49,19 @@ def main() -> int:
         return 0
 
     print("seed: empty database, creating the demo case…")
+
+    # Fixture data is drafted by the offline provider, whatever the service is
+    # configured to use for real work. Three reasons, and they all point the
+    # same way: a deploy must not depend on a third party being up, must not
+    # spend an external quota to produce demo text, and must not vary between
+    # deploys. The running service still uses its configured provider — this
+    # pins the *seed* only, and is reset immediately afterwards.
+    configured_provider = os.environ.get("DLG_LLM_PROVIDER")
+    os.environ["DLG_LLM_PROVIDER"] = "stub"
+    from app.config import get_settings  # noqa: PLC0415
+
+    get_settings.cache_clear()
+
     try:
         import demo_case  # noqa: PLC0415  (scripts/ is on sys.path below)
     except ImportError:
@@ -64,6 +77,14 @@ def main() -> int:
         print("seed: demo case failed; the service will start with no cases", file=sys.stderr)
         traceback.print_exc()
         return 0
+    finally:
+        # Hand the process back exactly as it was found, so the service that
+        # boots after this reads its own configuration and not the seed's.
+        if configured_provider is None:
+            os.environ.pop("DLG_LLM_PROVIDER", None)
+        else:
+            os.environ["DLG_LLM_PROVIDER"] = configured_provider
+        get_settings.cache_clear()
 
     print("seed: demo case created")
     return 0
